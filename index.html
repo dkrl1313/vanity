@@ -84,6 +84,7 @@ nav button[aria-current] { color: var(--accent); font-weight: 700; }
 .steps li::before { content: counter(s); flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--soft); color: var(--accent); font-size: 12px; font-weight: 700; display: grid; place-items: center; }
 .what { flex: 1; min-width: 0; display: grid; }
 button.what { border: 0; background: none; padding: 2px 0; min-height: 0; border-radius: 6px; text-align: left; }      /* 루틴에서 눌러 상세 열기 */
+.what .memo { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }      /* 바르는 법 메모는 한 줄로 (전체는 상세에서) */
 .what b { font-weight: 600; }
 .ctl { display: flex; gap: 4px; flex: none; }
 .ctl button { min-width: 36px; min-height: 36px; padding: 0; }
@@ -220,7 +221,13 @@ function generate(products, calm, now) {
         if (c.length) only[g] = next(g, c).id;
       }
       for (const cat of ORDER) {
-        const fit = usable.filter(p => p.cat === cat && fits(p, d, t, calm) && !(only[group(p)] && only[group(p)] !== p.id));
+        let fit = usable.filter(p => p.cat === cat && fits(p, d, t, calm) && !(only[group(p)] && only[group(p)] !== p.id));
+        // 레티놀·각질 제품을 쓰는 저녁엔 각질 성분 없는 클렌저로 — 자극이 겹치지 않게. 피부 보호 규칙이라 쓰는 때(아침만)보다 우선, 순한 클렌저가 없으면 그대로
+        if (cat === 'cleanser' && (only.acid || only.retinol) && fit.some(p => p.actives.includes('acid'))) {
+          const calmFit = fit.filter(p => !p.actives.includes('acid'));      // 원래 그 시간에 쓰던 순한 클렌저가 있으면 그것부터
+          const mild = calmFit.length ? calmFit : usable.filter(p => p.cat === cat && !p.actives.includes('acid'));
+          if (mild.length) fit = mild;
+        }
         const due = fit.filter(p => group(p) !== 'daily' || vitcAm(p));           // 요일·시간이 정해진 성분이 그 자리를 먼저 차지
         const pool = due.length ? due : fit;
         if (!pool.length) continue;
@@ -420,12 +427,13 @@ function viewRoutine() {
     const ids = R.days[dayIdx][t];
     const rows = ids.map((id, i) => {
       const p = byId.get(id); if (!p) return '';
-      const warn = expired(p, now) ? '<span class="tag bad">기한 지남</span>' : p.inUse ? '' : '<span class="tag warn">미사용</span>';
+      const warn = expired(p, now) ? '<span class="tag bad">기한 지남</span>' : !p.inUse ? '<span class="tag warn">미사용</span>'
+        : !R.manual && clash(p, t) ? '<span class="tag">각질 날 순한 세안</span>' : '';      // 자동 루틴에서 쓰는 때와 다른 자리 = 위 클렌저 교체
       const ctl = editing ? `<span class="ctl">
         <button id="u-${t}-${i}" data-act="move" data-t="${t}" data-i="${i}" data-by="-1" aria-label="${esc(p.name)} 위로" ${i ? '' : 'disabled'}>↑</button>
         <button id="w-${t}-${i}" data-act="move" data-t="${t}" data-i="${i}" data-by="1" aria-label="${esc(p.name)} 아래로" ${i < ids.length - 1 ? '' : 'disabled'}>↓</button>
         <button id="x-${t}-${i}" data-act="drop" data-t="${t}" data-i="${i}" aria-label="${esc(p.name)} 빼기">✕</button></span>` : '';
-      return `<li><button class="what" data-act="editProduct" data-id="${esc(p.id)}"><b>${esc(p.name)}</b><small>${sub(p)}</small></button>${warn}${ctl}</li>`;
+      return `<li><button class="what" data-act="editProduct" data-id="${esc(p.id)}"><b>${esc(p.name)}</b><small>${sub(p)}</small>${p.memo ? `<small class="memo">📝 ${esc(p.memo)}</small>` : ''}</button>${warn}${ctl}</li>`;
     }).join('');
     const rest = editing ? state.products.filter(p => !ids.includes(p.id) && !clash(p, t)).sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat)) : [];
     const add = rest.length ? `<select data-add="${t}" aria-label="${SLOTS[t]} 루틴에 제품 추가"><option value="">＋ 제품 추가</option>${rest.map(p =>
@@ -960,6 +968,10 @@ function selfTest() {
     [[0, 2, 0, 2, 0, 2, 2], [2, 0, 2, 0, 2, 0, 0]], '쓰는 때: 저녁만 비타민C는 저녁(레티놀 날 빼고), 아침만으로 둔 레티놀도 월·수·금 저녁에만');
   eq([clash(P({ cat: 'cleanser', when: 'am' }), 'pm'), clash(P({ cat: 'cleanser', when: 'am' }), 'am'), clash(P({ cat: 'cleanser' }), 'pm'), clash(P({ cat: 'serum', actives: ['retinol'], when: 'am' }), 'pm'), clash(undefined, 'pm')],
     [true, false, false, false, false], '직접 고친 루틴: 쓰는 때와 다른 시간 자리만 뺀다');
+  const cl = generate([P({ id: 'gel', cat: 'cleanser', when: 'am' }), P({ id: 'foam', cat: 'cleanser', actives: ['acid'], when: 'pm' }), P({ id: 'pad', cat: 'toner', actives: ['acid'] })], false, '2026-11-16');
+  const cl2 = generate([P({ id: 'foam', cat: 'cleanser', actives: ['acid'] }), P({ id: 'pad', cat: 'toner', actives: ['acid'] })], false, '2026-11-16');
+  eq([cl.map(d => d.am[0]).join(), cl.map(d => d.pm[0]).join(), cl2.every(d => d.pm[0] === 'foam')], ['gel,gel,gel,gel,gel,gel,gel', 'foam,gel,foam,foam,foam,gel,foam', true],
+    '각질 제품 쓰는 저녁엔 각질 성분 없는 클렌저로 (아침만 설정보다 우선), 순한 클렌저가 없으면 그대로');
   const ac = generate([P({ id: 'pad', cat: 'toner', actives: ['acid'] }), P({ id: 'plain', cat: 'toner' }), P({ id: 'am', cat: 'mask', actives: ['acid'] })], false, '2026-11-16');
   eq([ac[1].pm, ac[5].pm, ac.every(d => d.pm.filter(i => i === 'pad' || i === 'am').length <= 1)], [['pad'], ['plain', 'am'], true], '각질 성분은 한 저녁에 하나만: 화 패드, 토 마스크');
   const gp = ps => gaps(ps, '2026-11-16').map(s => (s.includes('1차') ? 'oil' : 'sun'));
