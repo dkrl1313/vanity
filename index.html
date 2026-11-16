@@ -6,6 +6,9 @@
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#faf7f5">
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#1b1716">
 <title>화장대</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-title" content="화장대">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🧴%3C/text%3E%3C/svg%3E">
 <style>
 :root {
@@ -58,6 +61,7 @@ nav button[aria-current] { color: var(--accent); font-weight: 700; }
 .secret { -webkit-text-security: disc; }     /* 비밀번호 칸으로 두면 비밀번호 관리자가 키를 저장하려 든다 */
 .ai { margin: 0; background: var(--soft); border-radius: 12px; padding: 10px 14px; font-size: 14px; }
 .note { background: var(--warn-bg); color: var(--warn); border-radius: 12px; padding: 10px 14px; font-size: 14px; margin-bottom: 10px; }
+.note button { display: block; margin-top: 8px; }
 .empty { text-align: center; padding: 40px 12px; display: grid; gap: 10px; justify-items: center; color: var(--muted); }
 .empty b { color: var(--ink); font-size: 17px; }
 .chip { min-height: 34px; padding: 4px 12px; border-radius: 999px; font-size: 13px; color: var(--muted); }
@@ -162,6 +166,7 @@ const TAGS = ['좋음', '건조', '유분', '트러블', '홍조', '예민'];
 // 레티놀·각질케어는 저녁에만, 서로 다른 날에. 목·일은 쉬는 날이라 팩을 둔다
 const NIGHTS = { retinol: [0, 2, 4], acid: [1, 5], pack: [3, 6] };
 const SOON = 30;                              // 기한이 이 날수 안이면 '임박'
+const BACKUP_EVERY = 14;                      // 마지막 백업이 이 날수만큼 지나면 루틴 화면에서 알린다
 
 /* ───────── 계산 (화면과 무관 — 점검: index.html?test) ───────── */
 const pad = n => String(n).padStart(2, '0');
@@ -217,6 +222,7 @@ function generate(products, calm, now) {
     return day;
   });
 }
+const backupDue = (s, now) => !!(s.products.length || s.logs.length) && (!s.backupAt || daysBetween(s.backupAt, now) >= BACKUP_EVERY);
 // 사용중인데 이번 주 루틴에 한 번도 없는 제품. 루틴 제외 종류·기한 지남·예민한 주에 쉬는 성분은 원래 빠지거나 따로 안내하니 뺀다
 // → 자동 루틴이면 같은 종류가 자리 수(매일 7·레티놀 3·각질 2·팩 2)보다 많아 밀린 것, 직접 고친 루틴이면 넣지 않은 것
 function missing(s, now) {
@@ -306,6 +312,7 @@ function cleanState(s) {
   return {
     products, logs: uniq(s.logs, cleanLog),
     routine: { manual: !!s.routine?.manual, days: DAYS.map((_, d) => ({ am: slot(s.routine?.days?.[d]?.am), pm: slot(s.routine?.days?.[d]?.pm) })) },
+    backupAt: date(s.backupAt),               // 마지막으로 백업 파일을 만든 날
   };
 }
 
@@ -336,6 +343,7 @@ let queue = [];                               // 사진 한 장에서 읽은 화
 const BACKUP_MAX = 300 * 2 ** 20;             // ponytail: 폰 메모리로 한 번에 읽을 수 있는 백업 크기. 사진이 아주 많이 쌓이면 백업을 나눠야 한다
 
 const product = id => state.products.find(p => p.id === id);
+const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;      // 홈 화면 앱으로 열었나
 const sub = p => [CATS[p.cat][0], ...p.actives.map(a => ACTIVES[a])].join(' · ');
 const fail = e => toast(`저장하지 못했어요. 저장 공간이나 브라우저 설정을 확인해 주세요. (${e?.name ?? '오류'})`, true);
 // ponytail: 바뀔 때마다 state 를 통째로 다시 쓴다(썸네일 포함). 피부 기록이 수백 건을 넘어 느려지면 기록을 키별로 쪼갤 것
@@ -382,6 +390,8 @@ function viewRoutine() {
   const out = missing(state, now).map(p => esc(p.name)).join(', ');
   if (out) notes.push(R.manual ? `사용중인데 루틴에 없는 제품: ${out}`
     : `같은 종류가 많아 이번 주 루틴에 자리가 없는 사용중 제품: ${out}. 같은 종류는 한 칸에 하나씩 날마다 돌려 써요. 직접 고치기로 넣거나, 지금 안 쓰는 건 미사용으로 바꿔 주세요.`);
+  if (backupDue(state, now)) notes.push(`${state.backupAt ? `마지막 백업이 ${daysBetween(state.backupAt, now)}일 전이에요.` : '아직 백업 파일을 만든 적이 없어요.'} 기록은 이 기기 브라우저에만 있어서 지워지면 되살릴 수 없어요.${standalone() ? '' : ' 홈 화면에 앱으로 설치해 두면 더 안전해요(⋯ 메뉴).'}
+    <button data-act="export">백업 파일 내보내기</button>`);
 
   const slot = t => {
     const ids = R.days[dayIdx][t];
@@ -499,6 +509,7 @@ async function logForm(l) {
 
 async function backupForm() {
   const key = await getKey();      // null = 저장소를 못 읽음 ('' = 키 없음)
+  const kept = await (navigator.storage?.persisted?.() ?? Promise.resolve(null)).catch(() => null);      // 시작할 때 persist() 로 요청해 둔 보호가 됐나
   modal(`<form method="dialog">
     <h2>AI 사진 읽기 (Google Gemini 무료)</h2>
     <p class="muted">Google AI Studio(aistudio.google.com)에서 무료 API 키를 만들어 넣으면, 피부 사진은 상태 칸과 메모를, 화장품 사진은 이름·종류·기한을 Gemini가 채워 줘요. 결제 정보를 연결하지 않은 프로젝트의 키면 요금이 나가지 않아요.</p>
@@ -509,9 +520,13 @@ async function backupForm() {
       : `<label>Gemini API 키 <input name="apiKey" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="AIza…"></label><button name="saveKey">키 저장</button>`}
     <h2>백업·복원</h2>
     <p class="muted">모든 내용은 이 기기의 이 브라우저 안에만 저장돼요. 브라우저 데이터를 지우거나 기기를 바꾸면 사라지니 가끔 백업 파일로 내려받아 두세요.</p>
-    <p>화장품 ${state.products.length}개 · 피부 기록 ${state.logs.length}건</p>
+    <p>화장품 ${state.products.length}개 · 피부 기록 ${state.logs.length}건 · 마지막 백업 ${state.backupAt || '없음'}</p>
     <button type="button" data-act="export">백업 파일 내보내기</button>
     <label class="btn"><input type="file" accept=".json,application/json" class="sr" data-pick="backup">백업 파일 가져오기</label>
+    <p class="muted">저장 보호: ${kept ? '켜짐 — 저장 공간이 부족해도 브라우저가 이 앱의 기록을 지우지 않아요.' : kept === false ? '꺼짐 — 저장 공간이 부족하면 브라우저가 이 앱의 기록을 지울 수도 있어요.' : '확인할 수 없어요.'}</p>
+    ${standalone() ? '' : `<h2>홈 화면에 앱으로 설치</h2>
+    <p class="muted">브라우저 메뉴(크롬은 오른쪽 위 ⋮, 삼성 인터넷은 아래쪽 ≡)에서 「홈 화면에 추가」나 「앱 설치」를 누르면 아이콘으로 바로 열 수 있어요. 설치한 앱은 브라우저가 기록을 지키는 쪽으로 다뤄서 저장 보호가 켜지기 쉬워요. 같은 브라우저 안이라 기록은 그대로 이어져요.</p>
+    <p class="note">크롬과 삼성 인터넷처럼 다른 브라우저끼리는 기록이 따로예요. 브라우저를 바꿀 땐 백업 파일로 옮겨 주세요(AI 키는 백업에 안 들어가요).</p>`}
     <div class="actions"><span class="grow"></span><button class="primary">닫기</button></div></form>`);
 }
 
@@ -534,11 +549,24 @@ async function exportAll() {
   const photos = Object.create(null);
   for (const l of state.logs) if (l.thumb) photos[l.id] = await idb.get('photo:' + l.id);
   // ponytail: 사진까지 JSON 한 파일로 내보낸다. 사진이 수백 장이라 파일이 무거워지면 zip·분할로
-  const blob = new Blob([JSON.stringify({ app: 'vanity', v: 1, at: today(), state, photos })], { type: 'application/json' });
-  if (blob.size > BACKUP_MAX) toast('백업이 300MB를 넘어 이 앱으로는 다시 가져올 수 없어요. 오래된 피부 기록을 지우고 다시 내보내 주세요.', true);
-  const url = URL.createObjectURL(blob);
-  Object.assign(document.createElement('a'), { href: url, download: `화장대-백업-${today()}.json` }).click();
-  setTimeout(() => URL.revokeObjectURL(url), 6e4);
+  const at = today(), name = `화장대-백업-${at}.json`;
+  const blob = new Blob([JSON.stringify({ app: 'vanity', v: 1, at, state: { ...state, backupAt: at }, photos })], { type: 'application/json' });
+  // 파일 공유를 받아 주는 브라우저(아이폰 등)는 공유 창으로, 아니면 내려받기로 — 안드로이드 크롬은 json 파일 공유를 막아 두어 「다운로드」 폴더로 간다
+  const file = new File([blob], name, { type: 'application/json' });
+  let shared = false;
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); shared = true; }
+    catch (e) { if (e?.name === 'AbortError') return; }      // 공유 창을 닫았으면 백업 안 한 것. 그 밖(누른 지 오래돼 막힘 등)은 내려받기로
+  }
+  if (!shared) {
+    const url = URL.createObjectURL(blob);
+    Object.assign(document.createElement('a'), { href: url, download: name }).click();
+    setTimeout(() => URL.revokeObjectURL(url), 6e4);
+  }
+  if (blob.size > BACKUP_MAX) return toast('백업이 300MB를 넘어 이 앱으로는 다시 가져올 수 없어요. 오래된 피부 기록을 지우고 다시 내보내 주세요.', true);
+  state.backupAt = at; save(); render();
+  if (dlg.open && dlg.querySelector('[data-pick=backup]')) backupForm();      // 열려 있는 ⋯ 창의 「마지막 백업」도 새로
+  toast(shared ? '백업 파일을 보냈어요. 폰 밖(구글 드라이브 등)에도 두면 더 안전해요' : '백업 파일을 「다운로드」 폴더에 저장했어요. 폰 밖(구글 드라이브 등)에도 두면 더 안전해요');
 }
 async function importFile(file) {
   if (file.size > BACKUP_MAX) return toast('백업 파일이 너무 커요 (300MB까지)', true);
@@ -546,6 +574,7 @@ async function importFile(file) {
   try { data = JSON.parse(await file.text()); } catch { return toast('백업 파일을 읽을 수 없어요', true); }
   if (data?.app !== 'vanity') return toast('이 앱의 백업 파일이 아니에요', true);
   const next = cleanState(data.state);
+  next.backupAt ||= date(data.at);            // 날짜 칸이 없던 옛 백업 파일은 파일을 만든 날로
   if (!confirm(`지금 내용을 지우고 백업 내용(화장품 ${next.products.length}개 · 피부 기록 ${next.logs.length}건)으로 바꿀까요?`)) return;
   // 새 사진 → 새 state → 옛 사진 삭제 순서. 중간에 실패해도 지금 기록은 남는다(id 가 같은 기록의 사진은 백업본으로 바뀌어 있을 수 있음)
   try {
@@ -924,7 +953,11 @@ function selfTest() {
     routine: { manual: 1, days: [{ am: ['a', 'a', 'ghost'], pm: 'x' }] }, logs: [{ id: 'l', date: 'nope', thumb: 'javascript:alert(1)', tags: ['예민', '<b>'] }] });
   eq(cs.products, [{ id: 'a', name: 'A', cat: 'etc', actives: ['vitc'], expiry: '', opened: true, openedAt: '', pao: 0, inUse: true, memo: '' }], '가져온 화장품 정리');
   eq([cs.routine.manual, cs.routine.days.length, cs.routine.days[0], cs.logs[0].thumb, cs.logs[0].tags, cs.logs[0].date === today()], [true, 7, { am: ['a'], pm: [] }, '', ['예민'], true], '가져온 루틴·기록 정리');
-  eq(cleanState(cleanState(undefined)), { products: [], logs: [], routine: { manual: false, days: DAYS.map(() => ({ am: [], pm: [] })) } }, '빈 상태');
+  eq(cleanState(cleanState(undefined)), { products: [], logs: [], routine: { manual: false, days: DAYS.map(() => ({ am: [], pm: [] })) }, backupAt: '' }, '빈 상태');
+  const B = (backupAt, n = 1) => ({ products: Array(n).fill(P({})), logs: [], backupAt });
+  eq([backupDue(B(''), '2026-11-16'), backupDue(B('', 0), '2026-11-16'), backupDue(B('2026-11-03'), '2026-11-16'), backupDue(B('2026-11-02'), '2026-11-16'),
+    backupDue(cleanState({ products: [{ name: 'a' }], backupAt: '2026-02-30' }), '2026-11-16')],
+    [true, false, false, true, true], '백업 알림: 기록이 있는데 백업이 없거나 14일 지났을 때 (없는 날짜는 백업 없음으로)');
 
   const bad = out.filter(([c]) => !c);
   document.title = bad.length ? `TEST FAIL ${bad.length}/${out.length}` : `TEST OK ${out.length}`;
