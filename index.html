@@ -241,7 +241,7 @@ const CAT_HINTS = [
 const ACTIVE_HINTS = {
   retinol: /레티놀|레티날|레티닐|retin/i,
   acid: /\b(aha|bha|pha|lha)\b|살리실|글리콜|필링|각질/i,
-  vitc: /비타민\s*c\b|vitamin\s*c\b|vita\s*c\b|아스코르/i,
+  vitc: /비타(민)?\s*c\b|vitamin\s*c\b|vita\s*c\b|아스코르|아스코빅/i,
 };
 function guess(name) {                        // 종류를 못 찾았어도 성분이 보이면 세럼으로
   const actives = Object.keys(ACTIVE_HINTS).filter(a => ACTIVE_HINTS[a].test(name));
@@ -554,7 +554,7 @@ const PRODUCT_PROMPT = `화장품 정리 앱이에요. 사진 속 화장품(용�
 - items: 사진에 보이는 화장품마다 하나씩, 크게 잘 보이는 것부터. 같은 제품의 앞면·뒷면처럼 한 제품이 여러 번 보이면 하나로 합쳐요. 화장품이 없으면 빈 배열.
 - name: "브랜드 제품명"을 한국어 표기로(한국어가 없으면 보이는 대로). 용량·호수는 빼요. 글자가 다 안 보이면 보이는 만큼만.
 - cat: 다음 중 하나. oil=클렌징오일·밤·워터·리무버, cleanser=폼·젤 클렌저, exfol=각질케어(필링·스크럽), toner=토너·스킨·패드, mask=마스크팩·워시오프팩, essence=에센스, serum=세럼·앰플, eye=아이크림, lotion=로션·에멀전, cream=크림, faceoil=페이스오일, sleep=슬리핑팩, sun=선크림·선스틱, makeup=색조, body=바디·헤어·핸드, etc=그 밖.
-- actives: 제품명이나 보이는 전성분에 있을 때만. retinol=레티놀·레티날 등, acid=AHA·BHA·PHA(살리실릭애씨드·글라이콜릭애씨드 등), vitc=비타민C(아스코빅애씨드 등). 짐작으로 넣지 않아요.
+- actives: 이 제품의 주된 기능 성분인 것만. 제품명·용기 문구·전성분에서 보이거나, 이 제품을 알고 있으면 그 지식으로 판단해요. retinol=레티놀·레티날·레티노이드 등, acid=각질을 녹이는 산 AHA·BHA·PHA·LHA(살리실릭애씨드·글라이콜릭애씨드·락틱애씨드 등), vitc=비타민C(아스코빅애씨드와 비타민C 유도체). 전성분 끝쪽에 조금 든 정도거나 확실하지 않으면 넣지 않아요.
 - expiry: 용기에 적힌 사용기한(EXP, ~까지)을 YYYY-MM-DD 로. 연·월만 있으면 그 달의 마지막 날. 제조일과 "제조일로부터 N개월"이 함께 보이면 계산해요. 제조일만 있거나 안 보이면 "". 제조번호(LOT)를 날짜로 읽지 않아요.
 - pao: 뚜껑 열린 통 그림 안이나 옆의 숫자(12M 등)를 개월 수로. 안 보이면 0.`;
 const PRODUCT_SCHEMA = {
@@ -568,9 +568,11 @@ const PRODUCT_SCHEMA = {
   required: ['items'], additionalProperties: false,
 };
 function cleanItems(r) {                      // AI 가 읽은 화장품도 믿지 않고 정해진 값만 (개봉·사용중은 사용자가 고른다)
-  return (Array.isArray(r?.items) ? r.items : []).slice(0, 30).map(x => cleanProduct({
-    name: typeof x?.name === 'string' ? x.name.replace(/\s+/g, ' ') : '', cat: x?.cat, actives: x?.actives, expiry: x?.expiry, pao: x?.pao,
-  })).filter(p => p.name);
+  return (Array.isArray(r?.items) ? r.items : []).slice(0, 30).map(x => {
+    const name = typeof x?.name === 'string' ? x.name.replace(/\s+/g, ' ') : '';
+    // 이름에 성분 단어가 있는데 AI 가 빠뜨렸으면 이름 추측으로 채운다
+    return cleanProduct({ name, cat: x?.cat, actives: [...(Array.isArray(x?.actives) ? x.actives : []), ...guess(name).actives], expiry: x?.expiry, pao: x?.pao });
+  }).filter(p => p.name);
 }
 const analyzeSkin = async (photo, key) => cleanAnalysis(await askGemini(photo, key, SKIN_PROMPT, SKIN_SCHEMA, '이 사진의 피부 상태를 기록해 주세요.'));
 const readProducts = async (photo, key) => cleanItems(await askGemini(photo, key, PRODUCT_PROMPT, PRODUCT_SCHEMA, '이 사진 속 화장품을 읽어 주세요.'));
@@ -822,6 +824,7 @@ function selfTest() {
     ['구달 청귤 비타민C 세럼', 'serum', ['vitc']], ['바이오더마 클렌징 워터', 'oil', []], ['닥터지 선크림 SPF50+', 'sun', []],
     ['일리윤 바디로션', 'body', []], ['라네즈 워터 슬리핑 마스크', 'sleep', []], ['Alpha 수분 크림', 'cream', []], ['모르는 것', 'etc', []],
     ['아이오페 임팩트 세럼', 'serum', []], ['레티놀 0.3', 'serum', ['retinol']], ['클리오 킬커버 팩트', 'makeup', []], ['메디힐 모델링 팩', 'mask', []],
+    ['구달 청귤 비타C 잡티 케어 세럼', 'serum', ['vitc']],
   ]) eq(guess(name), { cat, actives: act }, `이름 추측: ${name}`);
   eq([date('2026-02-30'), date('2024-02-29'), date('2026-13-01'), date('26-11-16'), date(20261116)], ['', '2024-02-29', '', '', ''], '없는 날짜는 버림');
 
@@ -852,9 +855,10 @@ function selfTest() {
     [{ ok: true, tags: ['건조'], summary: '볼이 건조해요' }, { ok: false, tags: [], summary: '너무 어두워요' }, { ok: false, tags: [], summary: '' }], 'AI 결과 정리');
   eq(cleanAnalysis({ ok: true, tags: [], summary: '볼이 붉어요.\n\n피부과 상담을 권해요.' }).summary, '볼이 붉어요. 피부과 상담을 권해요.', 'AI 요약은 한 줄로');
   eq([...cleanItems({ items: [{ name: ' 라운드랩\n독도  토너 ', cat: 'toner', actives: ['acid', 'x'], expiry: '2027-06-31', pao: 12, opened: true, inUse: true },
-    { name: '', cat: 'serum' }, { name: 'B', cat: 'nope', pao: 5, expiry: '2027-06-30' }, 'junk'] }).map(({ id, ...p }) => p), cleanItems(null)],
+    { name: '', cat: 'serum' }, { name: 'B', cat: 'nope', pao: 5, expiry: '2027-06-30' }, 'junk', { name: '구달 청귤 비타C 세럼', cat: 'serum', actives: [] }] }).map(({ id, ...p }) => p), cleanItems(null)],
     [{ name: '라운드랩 독도 토너', cat: 'toner', actives: ['acid'], expiry: '', opened: false, openedAt: '', pao: 12, inUse: false, memo: '' },
-      { name: 'B', cat: 'etc', actives: [], expiry: '2027-06-30', opened: false, openedAt: '', pao: 0, inUse: false, memo: '' }, []], 'AI가 읽은 화장품 정리');
+      { name: 'B', cat: 'etc', actives: [], expiry: '2027-06-30', opened: false, openedAt: '', pao: 0, inUse: false, memo: '' },
+      { name: '구달 청귤 비타C 세럼', cat: 'serum', actives: ['vitc'], expiry: '', opened: false, openedAt: '', pao: 0, inUse: false, memo: '' }, []], 'AI가 읽은 화장품 정리 (이름에 보이는 성분은 채움)');
   const G = (parts, finishReason = 'STOP') => ({ candidates: [{ content: { parts }, finishReason }] });
   eq(readGemini(G([{ text: '생각 중', thought: true }, { text: '{"ok":true,' }, { text: '"tags":["건조"],"summary":"s"}' }])), { ok: true, tags: ['건조'], summary: 's' }, 'Gemini 답: 생각 부분은 빼고 이어 붙여 읽기');
   const why = r => { try { readGemini(r); return 'ok'; } catch (e) { return /분석하지 않았/.test(e.message) ? 'blocked' : 'broken'; } };
