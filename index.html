@@ -83,6 +83,7 @@ nav button[aria-current] { color: var(--accent); font-weight: 700; }
 .steps li:first-child { border-top: 0; }
 .steps li::before { content: counter(s); flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--soft); color: var(--accent); font-size: 12px; font-weight: 700; display: grid; place-items: center; }
 .what { flex: 1; min-width: 0; display: grid; }
+button.what { border: 0; background: none; padding: 2px 0; min-height: 0; border-radius: 6px; text-align: left; }      /* 루틴에서 눌러 상세 열기 */
 .what b { font-weight: 600; }
 .ctl { display: flex; gap: 4px; flex: none; }
 .ctl button { min-width: 36px; min-height: 36px; padding: 0; }
@@ -424,7 +425,7 @@ function viewRoutine() {
         <button id="u-${t}-${i}" data-act="move" data-t="${t}" data-i="${i}" data-by="-1" aria-label="${esc(p.name)} 위로" ${i ? '' : 'disabled'}>↑</button>
         <button id="w-${t}-${i}" data-act="move" data-t="${t}" data-i="${i}" data-by="1" aria-label="${esc(p.name)} 아래로" ${i < ids.length - 1 ? '' : 'disabled'}>↓</button>
         <button id="x-${t}-${i}" data-act="drop" data-t="${t}" data-i="${i}" aria-label="${esc(p.name)} 빼기">✕</button></span>` : '';
-      return `<li><span class="what"><b>${esc(p.name)}</b><small>${sub(p)}</small></span>${warn}${ctl}</li>`;
+      return `<li><button class="what" data-act="editProduct" data-id="${esc(p.id)}"><b>${esc(p.name)}</b><small>${sub(p)}</small></button>${warn}${ctl}</li>`;
     }).join('');
     const rest = editing ? state.products.filter(p => !ids.includes(p.id) && !clash(p, t)).sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat)) : [];
     const add = rest.length ? `<select data-add="${t}" aria-label="${SLOTS[t]} 루틴에 제품 추가"><option value="">＋ 제품 추가</option>${rest.map(p =>
@@ -478,6 +479,7 @@ function productForm(p, fresh) {              // fresh = 사진에서 읽어 미
   const more = isNew && queue.length;
   modal(`<form method="dialog" data-form="product" data-id="${isNew ? '' : esc(p.id)}" ${blank ? 'data-auto="1"' : ''}>
     <h2>${isNew ? '화장품 등록' : '화장품 수정'}${more ? ` <small>· 사진에서 ${queue.length}개 더</small>` : ''}</h2>
+    ${isNew ? '' : (e => `<p class="muted">${badge(left(p, today()))} ${e ? `${e}까지${e === openLimit(p) ? ` (개봉 후 ${p.pao}개월)` : ''}` : '용기의 유통기한이나 개봉 후 사용기간을 넣으면 남은 날을 알려 줘요'}</p>`)(expiryOf(p))}
     ${isNew ? `<label class="btn"><input type="file" accept="image/*" class="sr" data-pick="product">📷 사진으로 채우기 (AI)</label>
     <p class="ai" role="status" hidden></p>` : ''}
     ${fresh && state.products.some(x => x.name === p.name) ? '<p class="note">같은 이름의 화장품이 이미 등록돼 있어요.</p>' : ''}
