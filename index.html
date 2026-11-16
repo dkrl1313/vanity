@@ -191,6 +191,7 @@ function group(p) {                           // 주기 묶음. 씻어내는 클
   if (p.cat === 'mask' || p.cat === 'sleep') return 'pack';
   return 'daily';
 }
+const clash = (p, t) => !!p?.when && group(p) === 'daily' && p.when !== t;      // 아침만·저녁만으로 고른 제품이 다른 시간 자리에 있나 (레티놀·각질·팩은 쓰는 때를 안 따름)
 const vitcAm = p => !p.when && p.actives.includes('vitc') && p.cat !== 'cleanser' && CATS[p.cat][1] === 'both';      // 바르는 비타민C는 아침으로 (쓰는 때를 직접 고르면 그쪽)
 function fits(p, d, t, calm) {                // 이 제품을 d요일 t(am/pm)에 써도 되는가
   const when = CATS[p.cat][1], g = group(p);
@@ -364,8 +365,13 @@ const fail = e => toast(`저장하지 못했어요. 저장 공간이나 브라�
 // ponytail: 바뀔 때마다 state 를 통째로 다시 쓴다(썸네일 포함). 피부 기록이 수백 건을 넘어 느려지면 기록을 키별로 쪼갤 것
 // noSave: 시작할 때 저장된 내용을 못 읽었으면 쓰지 않는다 — 빈 상태로 기존 기록을 덮어쓰지 않게
 const save = () => (noSave ? Promise.resolve(false) : idb.set('state', state).then(() => true, e => (fail(e), false)));
-function commit() {                           // 모든 변경의 끝: 자동 루틴 갱신 → 저장 → 다시 그리기. 저장 성공 여부를 돌려준다
+// 자동 루틴이면 다시 짜고, 직접 고친 루틴이면 「쓰는 때」와 다른 시간 자리에 있는 제품만 뺀다 (나머지 배치는 그대로)
+function arrange() {
   if (!state.routine.manual) state.routine.days = generate(state.products, isCalm(state.logs, today()), today());
+  else for (const day of state.routine.days) for (const t in SLOTS) day[t] = day[t].filter(id => !clash(product(id), t));
+}
+function commit() {                           // 모든 변경의 끝: 자동 루틴 갱신 → 저장 → 다시 그리기. 저장 성공 여부를 돌려준다
+  arrange();
   const saved = save(); render(); return saved;
 }
 const manual = () => { state.routine.manual = true; commit(); };
@@ -420,7 +426,7 @@ function viewRoutine() {
         <button id="x-${t}-${i}" data-act="drop" data-t="${t}" data-i="${i}" aria-label="${esc(p.name)} 빼기">✕</button></span>` : '';
       return `<li><span class="what"><b>${esc(p.name)}</b><small>${sub(p)}</small></span>${warn}${ctl}</li>`;
     }).join('');
-    const rest = editing ? state.products.filter(p => !ids.includes(p.id)).sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat)) : [];
+    const rest = editing ? state.products.filter(p => !ids.includes(p.id) && !clash(p, t)).sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat)) : [];
     const add = rest.length ? `<select data-add="${t}" aria-label="${SLOTS[t]} 루틴에 제품 추가"><option value="">＋ 제품 추가</option>${rest.map(p =>
       `<option value="${esc(p.id)}">${esc(p.name)} (${CATS[p.cat][0]}${p.inUse ? '' : ' · 미사용'})</option>`).join('')}</select>` : '';
     return `<section class="card"><h2>${t === 'am' ? '☀️' : '🌙'} ${SLOTS[t]}</h2>${rows ? `<ol class="steps">${rows}</ol>` : '<p class="muted">비어 있어요</p>'}${add}</section>`;
@@ -945,6 +951,8 @@ function selfTest() {
   ok(wh.every(d => d.am[0] === 'gel' && d.pm[0] === 'foam' && d.am.includes('lo') && d.pm.includes('lo') && !d.am.includes('cr') && d.pm.includes('cr')), '쓰는 때: 아침만·저녁만 제품은 매일 그 시간에만, 자동은 둘 다');
   eq([wh.map(d => +d.am.includes('vc') + 2 * d.pm.includes('vc')), wh.map(d => +d.am.includes('ret') + 2 * d.pm.includes('ret'))],
     [[0, 2, 0, 2, 0, 2, 2], [2, 0, 2, 0, 2, 0, 0]], '쓰는 때: 저녁만 비타민C는 저녁(레티놀 날 빼고), 아침만으로 둔 레티놀도 월·수·금 저녁에만');
+  eq([clash(P({ cat: 'cleanser', when: 'am' }), 'pm'), clash(P({ cat: 'cleanser', when: 'am' }), 'am'), clash(P({ cat: 'cleanser' }), 'pm'), clash(P({ cat: 'serum', actives: ['retinol'], when: 'am' }), 'pm'), clash(undefined, 'pm')],
+    [true, false, false, false, false], '직접 고친 루틴: 쓰는 때와 다른 시간 자리만 뺀다');
   const ac = generate([P({ id: 'pad', cat: 'toner', actives: ['acid'] }), P({ id: 'plain', cat: 'toner' }), P({ id: 'am', cat: 'mask', actives: ['acid'] })], false, '2026-11-16');
   eq([ac[1].pm, ac[5].pm, ac.every(d => d.pm.filter(i => i === 'pad' || i === 'am').length <= 1)], [['pad'], ['plain', 'am'], true], '각질 성분은 한 저녁에 하나만: 화 패드, 토 마스크');
   const gp = ps => gaps(ps, '2026-11-16').map(s => (s.includes('1차') ? 'oil' : 'sun'));
@@ -1003,7 +1011,7 @@ function selfTest() {
     state = cleanState(); noSave = true;
     toast('저장된 내용을 읽지 못했어요. 새로고침해 보세요. 지금 고친 내용은 저장되지 않아요.', true);
   }
-  if (!state.routine.manual) state.routine.days = generate(state.products, isCalm(state.logs, today()), today());
+  arrange();
   render();
   navigator.storage?.persist?.().catch(() => {});      // 브라우저가 임의로 비우지 않게 요청 (거절돼도 동작)
   idb.del('apiKey').catch(() => {});                   // ponytail: Claude 를 쓰던 때의 키 자리 — 남은 키가 있으면 지운다. 몇 달 뒤 이 줄은 지워도 된다
