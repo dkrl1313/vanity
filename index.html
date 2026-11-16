@@ -122,7 +122,7 @@ form:has([name=opened]:not(:checked)) .if-opened { display: none; }
 .actions { display: flex; gap: 8px; align-items: center; }
 .grow { flex: 1; }
 form > label.btn, .btn { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 10px; font-size: 15px; color: var(--ink); cursor: pointer; }
-.btn:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn:has(:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }      /* 창이 열릴 때 자동 초점엔 안 뜨고 키보드로 옮겼을 때만 */
 .btn:has(:disabled) { opacity: .35; pointer-events: none; }
 .adds { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
 .adds > * { min-height: 48px; }
@@ -447,7 +447,7 @@ function badge(l) {
 }
 function viewProducts() {
   const now = today(), rows = state.products.map(p => ({ p, l: left(p, now), e: expiryOf(p) })), out = new Set(missing(state, now).map(p => p.id));
-  const F = { all: ['전체', () => true], use: ['사용중', r => r.p.inUse], sealed: ['미개봉', r => !r.p.opened], soon: ['임박·만료', r => r.l !== null && r.l <= SOON] };
+  const F = { all: ['전체', () => true], use: ['사용중', r => r.p.inUse], sealed: ['미개봉', r => !r.p.opened], soon: ['임박·만료', r => r.l !== null && r.l <= SOON], none: ['기한 없음', r => !r.e] };
   const chips = Object.entries(F).map(([k, [name, fn]]) =>
     `<button id="f-${k}" class="chip" data-act="filter" data-f="${k}" aria-pressed="${k === filter}">${name} ${rows.filter(fn).length}</button>`).join('');
   const cards = rows.filter(F[filter][1])
@@ -480,8 +480,8 @@ function productForm(p, fresh) {              // fresh = 사진에서 읽어 미
   modal(`<form method="dialog" data-form="product" data-id="${isNew ? '' : esc(p.id)}" ${blank ? 'data-auto="1"' : ''}>
     <h2>${isNew ? '화장품 등록' : '화장품 수정'}${more ? ` <small>· 사진에서 ${queue.length}개 더</small>` : ''}</h2>
     ${isNew ? '' : (e => `<p class="muted">${badge(left(p, today()))} ${e ? `${e}까지${e === openLimit(p) ? ` (개봉 후 ${p.pao}개월)` : ''}` : '용기의 유통기한이나 개봉 후 사용기간을 넣으면 남은 날을 알려 줘요'}</p>`)(expiryOf(p))}
-    ${isNew ? `<label class="btn"><input type="file" accept="image/*" class="sr" data-pick="product">📷 사진으로 채우기 (AI)</label>
-    <p class="ai" role="status" hidden></p>` : ''}
+    <label class="btn"><input type="file" accept="image/*" class="sr" data-pick="product">📷 ${isNew ? '사진으로 채우기 (AI)' : '뒷면 사진으로 기한·성분 채우기 (AI)'}</label>
+    <p class="ai" role="status" hidden></p>
     ${fresh && state.products.some(x => x.name === p.name) ? '<p class="note">같은 이름의 화장품이 이미 등록돼 있어요.</p>' : ''}
     <label>이름 <input name="name" required pattern=".*\\S.*" maxlength="80" value="${esc(p.name)}" placeholder="예: 라운드랩 독도 토너" autocomplete="off"></label>
     <label>종류 <select name="cat">${ORDER.map(k => `<option value="${k}" ${k === p.cat ? 'selected' : ''}>${CATS[k][0]}${CATS[k][1] ? '' : ' (루틴 제외)'}</option>`).join('')}</select></label>
@@ -758,13 +758,18 @@ async function fillFromPhoto(form, file) {
     const items = await readProducts(await shrink(file, 2048, .85), key);      // 뒷면의 작은 기한 글자도 읽게 크게
     if (!live()) return;
     if (!items.length) return void (out.textContent = '사진에서 화장품을 찾지 못했어요. 이름이 보이게 가까이 찍어 주세요.');
-    const it = items[0], cur = readProduct(form);
-    queue = [...items.slice(1), ...queue];                // 앞 사진에서 남아 있던 제품은 뒤에 그대로
-    productForm({ ...cur, name: cur.name || it.name, cat: it.cat, actives: [...cur.actives, ...it.actives], expiry: it.expiry || cur.expiry, pao: it.pao || cur.pao }, true);
+    // 이미 등록한 제품의 수정 창이면 첫 제품만 쓰고(나머지를 새 등록으로 띄우지 않음), 직접 고른 종류도 그대로 둔다
+    const it = items[0], cur = readProduct(form), editing = !!form.dataset.id;
+    if (!editing) queue = [...items.slice(1), ...queue];  // 앞 사진에서 남아 있던 제품은 뒤에 그대로
+    productForm({ ...cur, name: cur.name || it.name, cat: editing && cur.cat !== 'etc' ? cur.cat : it.cat, actives: [...cur.actives, ...it.actives],
+      expiry: it.expiry || cur.expiry, pao: it.pao || cur.pao }, !editing);
+    const found = [it.expiry && `유통기한 ${it.expiry}`, it.pao && `개봉 후 ${it.pao}개월`, it.actives.length && `성분 ${it.actives.map(a => ACTIVES[a]).join('·')}`].filter(Boolean);
     const o = dlg.querySelector('.ai');
     o.hidden = false;
-    o.textContent = `${items.length > 1 ? `사진에서 ${items.length}개를 읽었어요. 저장하면 다음 것이 이어서 떠요. ` : ''}틀린 곳은 고쳐서 저장하세요. `
-      + '성분·유통기한·개봉 후 기간은 사진에 보일 때만 채워요. 뒷면(전성분·기한)을 이 창에서 한 번 더 찍으면 빈 칸을 더 채워요.';
+    o.textContent = `${!editing && items.length > 1 ? `사진에서 ${items.length}개를 읽었어요. 저장하면 다음 것이 이어서 떠요. ` : ''}`
+      + (found.length ? `${found.join(' · ')}을(를) 읽어 채웠어요. ` : '사진에서 기한·성분은 찾지 못했어요. ')
+      + (editing ? '저장을 눌러야 반영돼요.' : '틀린 곳은 고쳐서 저장하세요.')
+      + ' 뒷면(전성분·기한)을 이 창에서 한 번 더 찍으면 빈 칸을 더 채워요.';
   } catch (e) { if (live()) out.textContent = e.message; }
   finally { for (const el of lock) el.disabled = false; }
 }
