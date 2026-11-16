@@ -409,7 +409,7 @@ function viewProducts() {
   return `<div class="adds"><button id="add" class="primary" data-act="add">＋ 직접 등록</button>
     <label class="btn"><input type="file" accept="image/*" class="sr" data-pick="product">📷 사진으로 등록</label></div>` + (state.products.length
     ? `<div class="filters" role="group" aria-label="걸러 보기">${chips}</div>${cards || '<p class="empty">해당하는 화장품이 없어요</p>'}`
-    : '<div class="empty"><p><b>등록된 화장품이 없어요</b></p><p>사진으로 등록하면 AI가 이름·종류·기한을 읽어 줘요. 한 장에 여러 개를 찍어도 돼요.<br>직접 등록할 땐 이름만 적어도 종류를 골라 줘요.</p></div>');
+    : '<div class="empty"><p><b>등록된 화장품이 없어요</b></p><p>사진으로 등록하면 AI가 이름·종류·기한을 읽어 줘요. 한 장에 여러 개를 찍어도 돼요. 뒷면(전성분·사용기한)이 보이게 찍으면 성분까지 채워요.<br>직접 등록할 땐 이름만 적어도 종류를 골라 줘요.</p></div>');
 }
 
 function viewSkin() {
@@ -554,7 +554,7 @@ const PRODUCT_PROMPT = `화장품 정리 앱이에요. 사진 속 화장품(용�
 - items: 사진에 보이는 화장품마다 하나씩, 크게 잘 보이는 것부터. 같은 제품의 앞면·뒷면처럼 한 제품이 여러 번 보이면 하나로 합쳐요. 화장품이 없으면 빈 배열.
 - name: "브랜드 제품명"을 한국어 표기로(한국어가 없으면 보이는 대로). 용량·호수는 빼요. 글자가 다 안 보이면 보이는 만큼만.
 - cat: 다음 중 하나. oil=클렌징오일·밤·워터·리무버, cleanser=폼·젤 클렌저, exfol=각질케어(필링·스크럽), toner=토너·스킨·패드, mask=마스크팩·워시오프팩, essence=에센스, serum=세럼·앰플, eye=아이크림, lotion=로션·에멀전, cream=크림, faceoil=페이스오일, sleep=슬리핑팩, sun=선크림·선스틱, makeup=색조, body=바디·헤어·핸드, etc=그 밖.
-- actives: 이 제품의 주된 기능 성분인 것만. 제품명·용기 문구·전성분에서 보이거나, 이 제품을 알고 있으면 그 지식으로 판단해요. retinol=레티놀·레티날·레티노이드 등, acid=각질을 녹이는 산 AHA·BHA·PHA·LHA(살리실릭애씨드·글라이콜릭애씨드·락틱애씨드 등), vitc=비타민C(아스코빅애씨드와 비타민C 유도체). 전성분 끝쪽에 조금 든 정도거나 확실하지 않으면 넣지 않아요.
+- actives: 제품명·용기 문구·전성분에서 보이거나 이 제품을 확실히 알 때만. retinol=레티놀·레티날·레티노이드 등이 들어 있으면. acid=각질 케어용 산(글라이콜릭·락틱·만델릭·살리실릭애씨드, 베타인살리실레이트, 글루코노락톤·락토바이오닉애씨드 같은 PHA, LHA 등)이 하나라도 들어 있으면 — 산도를 맞추려고 넣는 시트릭애씨드는 빼요. vitc=아스코빅애씨드나 비타민C 유도체(아스코빌글루코사이드·에틸아스코빌에텔·소듐아스코빌포스페이트·아스코빌테트라이소팔미테이트 등)가 들어 있으면. 모르는 제품이고 사진에 성분이 안 보이면 넣지 않아요.
 - expiry: 용기에 적힌 사용기한(EXP, ~까지)을 YYYY-MM-DD 로. 연·월만 있으면 그 달의 마지막 날. 제조일과 "제조일로부터 N개월"이 함께 보이면 계산해요. 제조일만 있거나 안 보이면 "". 제조번호(LOT)를 날짜로 읽지 않아요.
 - pao: 뚜껑 열린 통 그림 안이나 옆의 숫자(12M 등)를 개월 수로. 안 보이면 0.`;
 const PRODUCT_SCHEMA = {
@@ -659,6 +659,7 @@ async function runAnalysis(form) {
   finally { if (seq === form._aiSeq) btn.disabled = save.disabled = false; }
 }
 // 화장품 사진 → 첫 제품으로 이 창을 채우고(이미 고른 개봉·사용중·메모는 그대로), 나머지는 저장할 때마다 하나씩 새 창으로. 사진은 저장하지 않는다
+// 같은 창에서 또 찍으면(앞면 다음 뒷면) 이미 채운 칸은 두고 새로 읽은 것만 더한다 — 성분은 합치고, 비어 온 기한은 그대로
 async function fillFromPhoto(form, file) {
   const out = form.querySelector('.ai'), lock = form.querySelectorAll('[data-pick=product], .primary');
   const live = () => form.isConnected && dlg.open;        // 창을 닫았거나 바뀌었으면 결과는 버린다 (읽는 동안 사진 고르기는 잠가 둔다)
@@ -673,12 +674,13 @@ async function fillFromPhoto(form, file) {
     const items = await readProducts(await shrink(file, 2048, .85), key);      // 뒷면의 작은 기한 글자도 읽게 크게
     if (!live()) return;
     if (!items.length) return void (out.textContent = '사진에서 화장품을 찾지 못했어요. 이름이 보이게 가까이 찍어 주세요.');
-    const { name, cat, actives, expiry, pao } = items[0];
-    queue = items.slice(1);
-    productForm({ ...readProduct(form), name, cat, actives, expiry, pao }, true);
+    const it = items[0], cur = readProduct(form);
+    queue = [...items.slice(1), ...queue];                // 앞 사진에서 남아 있던 제품은 뒤에 그대로
+    productForm({ ...cur, name: cur.name || it.name, cat: it.cat, actives: [...cur.actives, ...it.actives], expiry: it.expiry || cur.expiry, pao: it.pao || cur.pao }, true);
     const o = dlg.querySelector('.ai');
     o.hidden = false;
-    o.textContent = `${items.length > 1 ? `사진에서 ${items.length}개를 읽었어요. 저장하면 다음 것이 이어서 떠요. ` : ''}틀린 곳은 고쳐서 저장하세요. 유통기한·개봉 후 기간은 사진에 보일 때만 채워요.`;
+    o.textContent = `${items.length > 1 ? `사진에서 ${items.length}개를 읽었어요. 저장하면 다음 것이 이어서 떠요. ` : ''}틀린 곳은 고쳐서 저장하세요. `
+      + '성분·유통기한·개봉 후 기간은 사진에 보일 때만 채워요. 뒷면(전성분·기한)을 이 창에서 한 번 더 찍으면 빈 칸을 더 채워요.';
   } catch (e) { if (live()) out.textContent = e.message; }
   finally { for (const el of lock) el.disabled = false; }
 }
