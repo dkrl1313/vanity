@@ -90,6 +90,10 @@ button.what { border: 0; background: none; padding: 2px 0; min-height: 0; border
 .ctl { display: flex; gap: 4px; flex: none; }
 .ctl button { min-width: 36px; min-height: 36px; padding: 0; }
 .card select { margin-top: 8px; }
+.tick { flex: none; width: 40px; min-height: 40px; padding: 0; border-radius: 50%; color: var(--line); font-weight: 700; }      /* 발랐어요 체크 */
+.tick[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.steps li:has(.tick[aria-pressed=true]) .what { opacity: .5; }
+.week { margin: 0 0 10px; }
 
 /* 화장품 */
 .filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
@@ -181,6 +185,9 @@ const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())
 const today = () => ymd(new Date());
 const todayIdx = () => (new Date().getDay() + 6) % 7;      // 월=0 … 일=6
 const daysBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 864e5);
+const local = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const addDays = (s, n) => { const d = local(s); d.setDate(d.getDate() + n); return ymd(d); };
+const dow = s => (local(s).getDay() + 6) % 7;                // 월=0 … 일=6
 function addMonths(s, n) {                    // 1/31 + 1개월 = 2월 말일 (다음 달로 넘치지 않게)
   const [y, m, d] = s.split('-').map(Number);
   return ymd(new Date(y, m - 1 + n, Math.min(d, new Date(y, m + n, 0).getDate())));
@@ -276,6 +283,20 @@ function gaps(products, now) {
 // 기한 하나씩 채우기 순서: 기한(적힌 날짜·개봉 후 기간)을 아직 모르는 제품 — 루틴에 쓰는 개봉 제품 먼저, 이름 순
 const fillOrder = products => products.filter(p => !expiryOf(p)).sort((a, b) => b.opened - a.opened || a.name.localeCompare(b.name, 'ko')).map(p => p.id);
 const backupDue = (s, now) => !!(s.products.length || s.logs.length) && (!s.backupAt || daysBetween(s.backupAt, now) >= BACKUP_EVERY);
+// 이번 주 월요일~오늘, 루틴이 있는 자리 중 제품을 빠짐없이 「발랐어요」로 체크한 수 → { am: [다 바름, 자리 수], pm: [...] }
+function weekDone(s, now) {
+  const r = { am: [0, 0], pm: [0, 0] };
+  for (let i = 0; i <= dow(now); i++) {
+    const got = s.ticks[addDays(now, i - dow(now))];
+    for (const t in SLOTS) {
+      const ids = s.routine.days[i][t];
+      if (!ids.length) continue;
+      r[t][1]++;
+      if (ids.every(id => got?.[t].includes(id))) r[t][0]++;
+    }
+  }
+  return r;
+}
 // 개봉했는데 이번 주 루틴에 한 번도 없는 제품. 루틴 제외 종류·기한 지남·예민한 주에 쉬는 성분은 원래 빠지거나 따로 안내하니 뺀다
 // → 자동 루틴이면 같은 종류가 자리 수(매일 7·팩 2)보다, 또는 레티놀·각질 성분 제품이 저녁 자리(레티놀 3·각질 2)보다 많아 밀린 것, 직접 고친 루틴이면 넣지 않은 것
 function missing(s, now) {
@@ -376,6 +397,9 @@ function cleanState(s) {
     routine: { manual: !!s.routine?.manual, days: DAYS.map((_, d) => ({ am: slot(s.routine?.days?.[d]?.am), pm: slot(s.routine?.days?.[d]?.pm) })) },
     backupAt: date(s.backupAt),               // 마지막으로 백업 파일을 만든 날
     done: (Array.isArray(s.done) ? s.done : []).map(cleanDone).filter(x => x.name).slice(-300),      // ponytail: 다 쓴 제품은 최근 300개까지만
+    // 발랐어요 체크: { 'YYYY-MM-DD': { am: [id…], pm: [id…] } } — 없는 제품·빈 날은 버린다 (한 달 지난 날은 체크할 때 지움)
+    ticks: Object.fromEntries(Object.entries(s.ticks && typeof s.ticks === 'object' ? s.ticks : {}).filter(([k]) => date(k))
+      .map(([k, v]) => [k, { am: slot(v?.am), pm: slot(v?.pm) }]).filter(([, v]) => v.am.length || v.pm.length)),
   };
 }
 
@@ -467,8 +491,18 @@ function viewRoutine() {
   if (backupDue(state, now)) notes.push(`${state.backupAt ? `마지막 백업이 ${daysBetween(state.backupAt, now)}일 전이에요.` : '아직 백업 파일을 만든 적이 없어요.'} 기록은 이 기기 브라우저에만 있어서 지워지면 되살릴 수 없어요.${standalone() ? '' : ' 홈 화면에 앱으로 설치해 두면 더 안전해요(⋯ 메뉴).'}
     <button data-act="export">백업 파일 내보내기</button>`);
 
+  // 발랐어요 체크: 이번 주 오늘까지만 (지난 요일은 깜빡한 체크를 채울 수 있게). 고치는 중엔 숨긴다
+  const day = addDays(now, dayIdx - todayIdx()), canTick = !editing && dayIdx <= todayIdx(), got = state.ticks[day];
+  const wk = weekDone(state, now), monday = addDays(now, -todayIdx());
+  const week = Object.keys(state.ticks).some(k => k >= monday && k <= now)
+    ? `<p class="muted week">이번 주 빠짐없이 바른 때 (월~오늘) · 아침 ${wk.am[0]}/${wk.am[1]} · 저녁 ${wk.pm[0]}/${wk.pm[1]}</p>` : '';
   const slot = t => {
     const ids = R.days[dayIdx][t];
+    const tick = (p, i) => {
+      const on = !!got?.[t].includes(p.id);
+      return `<button id="k-${t}-${i}" class="tick" data-act="tick" data-day="${day}" data-t="${t}" data-id="${esc(p.id)}" aria-pressed="${on}" aria-label="${esc(p.name)} 발랐어요">✓</button>`;
+    };
+    const real = ids.filter(id => byId.has(id)), n = real.filter(id => got?.[t].includes(id)).length;
     const rows = ids.map((id, i) => {
       const p = byId.get(id); if (!p) return '';
       const pairTag = ids.some(x => byId.get(x)?.pair === p.id) ? '<span class="tag">함께</span>' : '';      // 다음 제품과 함께 바르려고 붙은 것
@@ -479,19 +513,19 @@ function viewRoutine() {
         <button id="u-${t}-${i}" data-act="move" data-t="${t}" data-i="${i}" data-by="-1" aria-label="${esc(p.name)} 위로" ${i ? '' : 'disabled'}>↑</button>
         <button id="w-${t}-${i}" data-act="move" data-t="${t}" data-i="${i}" data-by="1" aria-label="${esc(p.name)} 아래로" ${i < ids.length - 1 ? '' : 'disabled'}>↓</button>
         <button id="x-${t}-${i}" data-act="drop" data-t="${t}" data-i="${i}" aria-label="${esc(p.name)} 빼기">✕</button></span>` : '';
-      return `<li><button class="what" data-act="editProduct" data-id="${esc(p.id)}"><b>${esc(p.name)}</b><small>${sub(p)}</small>${p.memo ? `<small class="memo">📝 ${esc(p.memo)}</small>` : ''}</button>${hot}${warn}${ctl}</li>`;
+      return `<li><button class="what" data-act="editProduct" data-id="${esc(p.id)}"><b>${esc(p.name)}</b><small>${sub(p)}</small>${p.memo ? `<small class="memo">📝 ${esc(p.memo)}</small>` : ''}</button>${hot}${warn}${ctl}${canTick ? tick(p, i) : ''}</li>`;
     }).join('');
     const rest = editing ? state.products.filter(p => !ids.includes(p.id)).sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat)) : [];
     const add = rest.length ? `<select data-add="${t}" aria-label="${SLOTS[t]} 루틴에 제품 추가"><option value="">＋ 제품 추가</option>${rest.map(p =>
       `<option value="${esc(p.id)}">${esc(p.name)} (${CATS[p.cat][0]}${p.opened ? '' : ' · 미개봉'})</option>`).join('')}</select>` : '';
-    return `<section class="card"><h2>${t === 'am' ? '☀️' : '🌙'} ${SLOTS[t]}</h2>${rows ? `<ol class="steps">${rows}</ol>` : '<p class="muted">비어 있어요</p>'}${add}</section>`;
+    return `<section class="card"><h2>${t === 'am' ? '☀️' : '🌙'} ${SLOTS[t]}${canTick && real.length ? ` <small>${n === real.length ? '다 발랐어요' : `${n}/${real.length} 발랐어요`}</small>` : ''}</h2>${rows ? `<ol class="steps">${rows}</ol>` : '<p class="muted">비어 있어요</p>'}${add}</section>`;
   };
 
   return `<div class="days" role="group" aria-label="요일">${days}</div>
     <div class="bar"><small>${R.manual ? '직접 고친 루틴 · 자동 갱신은 멈췄어요' : '자동 루틴 · 화장품이 바뀌면 알아서 다시 짜요'}</small>
       ${R.manual ? '<button id="regen" data-act="regen">자동으로 다시 짜기</button>' : ''}
       <button id="edit" data-act="edit">${editing ? '고치기 끝' : '직접 고치기'}</button></div>
-    ${notes.map(n => `<p class="note">${n}</p>`).join('')}${slot('am')}${slot('pm')}
+    ${notes.map(n => `<p class="note">${n}</p>`).join('')}${week}${slot('am')}${slot('pm')}
     <button id="check" class="wide" data-act="check">✨ AI 루틴 점검</button>`;
 }
 
@@ -956,6 +990,12 @@ const ACT = {
     focusId = `${d.by < 0 ? 'u' : 'w'}-${d.t}-${j}`; manual();
   },
   drop(d) { state.routine.days[dayIdx][d.t].splice(+d.i, 1); manual(); },
+  tick(d) {                                   // 발랐어요 켜고 끄기. 한 달 지난 체크·빈 날은 이때 치운다
+    const all = state.ticks, s = (all[d.day] ??= { am: [], pm: [] })[d.t], i = s.indexOf(d.id);
+    if (i < 0) s.push(d.id); else s.splice(i, 1);
+    for (const k in all) if (daysBetween(k, today()) > 31 || !(all[k].am.length || all[k].pm.length)) delete all[k];
+    commit();
+  },
   filter(d) { filter = d.f; render(); },
   add() { queue = []; fill = null; rebuyFor = null; productForm(); },
   again(d) { const x = state.done.find(x => x.id === d.id); if (x) { x.again = !x.again; commit(); } },
@@ -1239,7 +1279,14 @@ function selfTest() {
     routine: { manual: 1, days: [{ am: ['a', 'a', 'ghost'], pm: 'x' }] }, logs: [{ id: 'l', date: 'nope', thumb: 'javascript:alert(1)', tags: ['예민', '<b>'] }] });
   eq(cs.products, [{ id: 'a', name: 'A', cat: 'etc', actives: ['vitc'], expiry: '', opened: true, openedAt: '', pao: 0, memo: '', when: '', pair: '' }], '가져온 화장품 정리 (옛 사용중 = 개봉)');
   eq([cs.routine.manual, cs.routine.days.length, cs.routine.days[0], cs.logs[0].thumb, cs.logs[0].tags, cs.logs[0].date === today()], [true, 7, { am: ['a'], pm: [] }, '', ['예민'], true], '가져온 루틴·기록 정리');
-  eq(cleanState(cleanState(undefined)), { products: [], logs: [], routine: { manual: false, days: DAYS.map(() => ({ am: [], pm: [] })) }, backupAt: '', done: [] }, '빈 상태');
+  eq(cleanState(cleanState(undefined)), { products: [], logs: [], routine: { manual: false, days: DAYS.map(() => ({ am: [], pm: [] })) }, backupAt: '', done: [], ticks: {} }, '빈 상태');
+  eq(cleanState({ products: [{ id: 'a', name: 'A' }], ticks: { '2026-11-16': { am: ['a', 'a', 'ghost'], pm: 'x' }, '2026-02-30': { am: ['a'] }, '2026-11-15': { am: [] }, junk: 1 } }).ticks,
+    { '2026-11-16': { am: ['a'], pm: [] } }, '발랐어요 체크 정리: 없는 날짜·없는 제품·빈 날은 버림');
+  eq([addDays('2026-11-30', 1), addDays('2026-11-16', -1), dow('2026-11-16'), dow('2026-11-22')], ['2026-12-01', '2026-11-15', 0, 6], '날짜 더하기·요일 (월=0)');
+  const W = (am, pm) => ({ am, pm });
+  eq(weekDone({ routine: { days: [W(['a', 'b'], ['c']), W(['a'], []), W(['a', 'b'], ['c']), W(['a'], []), W([], []), W([], []), W([], [])] },
+    ticks: { '2026-11-16': W(['b', 'a'], []), '2026-11-17': W(['a'], []), '2026-11-18': W(['a'], ['c']), '2026-11-19': W(['a'], []) } }, '2026-11-18'),
+    { am: [2, 3], pm: [1, 2] }, '이번 주 빠짐없이 바른 때: 월~오늘만, 하나라도 빠지면 안 셈, 빈 자리는 안 셈');
   const B = (backupAt, n = 1) => ({ products: Array(n).fill(P({})), logs: [], backupAt });
   eq([backupDue(B(''), '2026-11-16'), backupDue(B('', 0), '2026-11-16'), backupDue(B('2026-11-03'), '2026-11-16'), backupDue(B('2026-11-02'), '2026-11-16'),
     backupDue(cleanState({ products: [{ name: 'a' }], backupAt: '2026-02-30' }), '2026-11-16')],
