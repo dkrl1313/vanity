@@ -301,20 +301,23 @@ const idb = (() => {
     t.oncomplete = () => ok(q.result);
     t.onerror = t.onabort = () => no(t.error);
   })).catch(e => { open = null; throw e; });
-  return { get: k => run('readonly', s => s.get(k)), set: (k, v) => run('readwrite', s => s.put(v, k)), del: k => run('readwrite', s => s.delete(k)) };
+  return { get: k => run('readonly', s => s.get(k)), set: (k, v) => run('readwrite', s => s.put(v, k)), del: k => run('readwrite', s => s.delete(k)),
+    run };
 })();
 
 /* ───────── 화면 ───────── */
 const $ = s => document.querySelector(s);
 const view = $('#view'), dlg = $('#dlg');
 const esc = s => String(s).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
-let state, tab = 'routine', dayIdx = todayIdx(), shownDay = today(), editing = false, filter = 'all', focusId = '', toastTimer;
+let state, tab = 'routine', dayIdx = todayIdx(), shownDay = today(), editing = false, filter = 'all', focusId = '', toastTimer, noSave = false;
+const BACKUP_MAX = 300 * 2 ** 20;             // ponytail: 폰 메모리로 한 번에 읽을 수 있는 백업 크기. 사진이 아주 많이 쌓이면 백업을 나눠야 한다
 
 const product = id => state.products.find(p => p.id === id);
 const sub = p => [CATS[p.cat][0], ...p.actives.map(a => ACTIVES[a])].join(' · ');
 const fail = e => toast(`저장하지 못했어요. 저장 공간이나 브라우저 설정을 확인해 주세요. (${e?.name ?? '오류'})`, true);
 // ponytail: 바뀔 때마다 state 를 통째로 다시 쓴다(썸네일 포함). 피부 기록이 수백 건을 넘어 느려지면 기록을 키별로 쪼갤 것
-const save = () => idb.set('state', state).then(() => true, e => (fail(e), false));
+// noSave: 시작할 때 저장된 내용을 못 읽었으면 쓰지 않는다 — 빈 상태로 기존 기록을 덮어쓰지 않게
+const save = () => (noSave ? Promise.resolve(false) : idb.set('state', state).then(() => true, e => (fail(e), false)));
 function commit() {                           // 모든 변경의 끝: 자동 루틴 갱신 → 저장 → 다시 그리기. 저장 성공 여부를 돌려준다
   if (!state.routine.manual) state.routine.days = generate(state.products, isCalm(state.logs, today()), today());
   const saved = save(); render(); return saved;
@@ -459,7 +462,7 @@ async function backupForm() {
     <h2>AI 피부 분석</h2>
     <p class="muted">피부 기록에 사진을 넣으면 Claude가 사진을 보고 상태 칸과 메모를 채워 줘요. 사진은 분석할 때만 Anthropic API로 보내고, 요금(보통 한 번에 수십 원)은 내 API 계정에서 나가요. 키는 이 브라우저에만 저장되고 백업 파일에는 들어가지 않아요. 이 앱 전용 키를 새로 만들고 Anthropic 콘솔에서 월 사용 한도를 걸어 두길 권해요.</p>
     ${key ? `<p>등록된 키 ${esc(key.slice(0, 10))}…${esc(key.slice(-4))}</p><button type="button" class="danger" data-act="delKey">키 지우기</button>`
-      : `<label>Anthropic API 키 <input name="apiKey" class="secret" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="sk-ant-…"></label><button name="saveKey">키 저장</button>`}
+      : `<label>Anthropic API 키 <input name="apiKey" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="sk-ant-…"></label><button name="saveKey">키 저장</button>`}
     <h2>백업·복원</h2>
     <p class="muted">모든 내용은 이 기기의 이 브라우저 안에만 저장돼요. 브라우저 데이터를 지우거나 기기를 바꾸면 사라지니 가끔 백업 파일로 내려받아 두세요.</p>
     <p>화장품 ${state.products.length}개 · 피부 기록 ${state.logs.length}건</p>
@@ -487,28 +490,27 @@ async function exportAll() {
   const photos = Object.create(null);
   for (const l of state.logs) if (l.thumb) photos[l.id] = await idb.get('photo:' + l.id);
   // ponytail: 사진까지 JSON 한 파일로 내보낸다. 사진이 수백 장이라 파일이 무거워지면 zip·분할로
-  const url = URL.createObjectURL(new Blob([JSON.stringify({ app: 'vanity', v: 1, at: today(), state, photos })], { type: 'application/json' }));
+  const blob = new Blob([JSON.stringify({ app: 'vanity', v: 1, at: today(), state, photos })], { type: 'application/json' });
+  if (blob.size > BACKUP_MAX) toast('백업이 300MB를 넘어 이 앱으로는 다시 가져올 수 없어요. 오래된 피부 기록을 지우고 다시 내보내 주세요.', true);
+  const url = URL.createObjectURL(blob);
   Object.assign(document.createElement('a'), { href: url, download: `화장대-백업-${today()}.json` }).click();
   setTimeout(() => URL.revokeObjectURL(url), 6e4);
 }
 async function importFile(file) {
+  if (file.size > BACKUP_MAX) return toast('백업 파일이 너무 커요 (300MB까지)', true);
   let data;
   try { data = JSON.parse(await file.text()); } catch { return toast('백업 파일을 읽을 수 없어요', true); }
   if (data?.app !== 'vanity') return toast('이 앱의 백업 파일이 아니에요', true);
   const next = cleanState(data.state);
   if (!confirm(`지금 내용을 지우고 백업 내용(화장품 ${next.products.length}개 · 피부 기록 ${next.logs.length}건)으로 바꿀까요?`)) return;
-  const wrote = [];
-  try {                                       // 새 사진 → 새 state → 옛 사진 삭제 순서. 중간에 실패해도 지금 내용은 남는다
+  // 새 사진 → 새 state → 옛 사진 삭제 순서. 중간에 실패해도 지금 기록은 남는다(id 가 같은 기록의 사진은 백업본으로 바뀌어 있을 수 있음)
+  try {
     for (const l of next.logs) {
       const ph = data.photos?.[l.id];
-      if (l.thumb && isPhoto(ph)) { await idb.set('photo:' + l.id, ph); wrote.push(l.id); }
+      if (l.thumb && isPhoto(ph)) await idb.set('photo:' + l.id, ph);
     }
     await idb.set('state', next);
-  } catch (e) {                               // 실패하면 이번에 새로 쓴 사진 중 지금 기록에 없는 것은 치운다
-    const keep = new Set(state.logs.map(l => l.id));
-    for (const id of wrote) if (!keep.has(id)) idb.del('photo:' + id).catch(() => {});
-    return fail(e);
-  }
+  } catch (e) { return fail(e); }             // 그때 먼저 써 둔 사진은 다음 시작 때 sweepPhotos 가 치운다
   const keep = new Set(next.logs.map(l => l.id));
   for (const l of state.logs) if (!keep.has(l.id)) idb.del('photo:' + l.id).catch(() => {});
   state = next; dlg.close(); commit(); toast('백업을 가져왔어요');
@@ -545,7 +547,7 @@ async function analyzeSkin(photo, apiKey) {
   let res;
   try {
     res = await client.beta.messages.parse({
-      model: 'claude-opus-5-5', max_tokens: 16000,
+      model: 'claude-opus-5-5', max_tokens: 4096,      // 답은 짧은 JSON 하나 — 사진 속 글자로 긴 출력을 유도해도 1회 요금이 커지지 않게
       betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',    // 안전 분류기가 거절하면 서버가 맞는 모델로 다시 시도
       output_config: { effort: 'low', format },
       system: SKIN_PROMPT,
@@ -777,12 +779,30 @@ function selfTest() {
 /* ───────── 시작 ───────── */
 (async () => {
   if (location.search === '?test') return selfTest();
-  try { state = cleanState(await idb.get('state')); }
-  catch { state = cleanState(); toast('이 브라우저에서는 저장이 막혀 있어요. 창을 닫으면 내용이 사라져요.', true); }
+  let loaded = false;
+  try {
+    const saved = await idb.get('state').catch(() => idb.get('state'));      // 연결이 끊겼으면 idb 가 다시 열어 한 번 더
+    state = cleanState(saved); loaded = saved != null;
+  } catch {
+    state = cleanState(); noSave = true;
+    toast('저장된 내용을 읽지 못했어요. 새로고침해 보세요. 지금 고친 내용은 저장되지 않아요.', true);
+  }
   if (!state.routine.manual) state.routine.days = generate(state.products, isCalm(state.logs, today()), today());
   render();
   navigator.storage?.persist?.().catch(() => {});      // 브라우저가 임의로 비우지 않게 요청 (거절돼도 동작)
+  // 사진 정리는 저장된 상태를 제대로 읽었을 때만(못 읽었는데 지우면 사진을 다 잃는다), 그리고 앱이 이 창 하나에서만 열려 있을 때만 —
+  // 처음 연 창이 잠금을 닫힐 때까지 쥐고 있어서, 다른 창이 사진을 쓰는 도중에 지우지 않는다. 잠금을 못 쓰는 브라우저면 정리하지 않는다
+  if (loaded) navigator.locks?.request('vanity-sweep', { ifAvailable: true }, lock => lock && sweepPhotos().then(() => new Promise(() => {}))).catch(() => {});
 })();
+// 기록이 가리키지 않는 사진(저장·가져오기가 중간에 실패한 흔적)을 치운다. 키 목록 읽기와 지우기를 한 트랜잭션으로
+function sweepPhotos() {
+  const keep = new Set(state.logs.map(l => 'photo:' + l.id));
+  return idb.run('readwrite', s => {
+    const q = s.getAllKeys();
+    q.onsuccess = () => { for (const k of q.result) if (typeof k === 'string' && k.startsWith('photo:') && !keep.has(k)) s.delete(k); };
+    return q;
+  });
+}
 </script>
 </body>
 </html>
