@@ -522,7 +522,7 @@ function productForm(p, fresh) {              // fresh = 사진에서 읽어 미
     <label>종류 <select name="cat">${ORDER.map(k => `<option value="${k}" ${k === p.cat ? 'selected' : ''}>${CATS[k][0]}${CATS[k][1] ? '' : ' (루틴 제외)'}</option>`).join('')}</select></label>
     <label>쓰는 때 — 레티놀·각질 성분·팩은 이 설정과 상관없이 정해진 저녁에만 <select name="when">${[['', '자동 (종류·성분에 맞게)'], ['am', '아침만'], ['pm', '저녁만']].map(([v, n]) =>
       `<option value="${v}" ${v === p.when ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
-    <label>함께 바를 제품 — 이 제품이 루틴에 들어가는 날 바로 앞에 붙여요 <select name="pair"><option value="">없음</option>${state.products.filter(q => q.id !== p.id)
+    <label>먼저 바를 제품 — 이 제품 바로 앞에 붙여 발라요 (예: 레티놀 아이크림 앞에 일반 아이크림) <select name="pair"><option value="">없음</option>${state.products.filter(q => q.id !== p.id)
       .sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat) || a.name.localeCompare(b.name, 'ko'))
       .map(q => `<option value="${esc(q.id)}" ${q.id === p.pair ? 'selected' : ''}>${esc(q.name)} (${CATS[q.cat][0]})</option>`).join('')}</select></label>
     <fieldset><legend>성분 — 들어 있으면 체크해요. 루틴의 요일·시간을 나눠요 (효소 세안제·파우더 워시도 AHA·BHA·효소)</legend><div class="checks">${Object.entries(ACTIVES).map(([k, v]) =>
