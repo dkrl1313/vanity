@@ -1264,6 +1264,7 @@ function selfTest() {
   arrange();
   render();
   navigator.storage?.persist?.().catch(() => {});      // 브라우저가 임의로 비우지 않게 요청 (거절돼도 동작)
+  navigator.serviceWorker?.register('sw.js').catch(() => {});   // 인터넷 없이도 열리게 (sw.js)
   idb.del('apiKey').catch(() => {});                   // ponytail: Claude 를 쓰던 때의 키 자리 — 남은 키가 있으면 지운다. 몇 달 뒤 이 줄은 지워도 된다
   // 사진 정리는 저장된 상태를 제대로 읽었을 때만(못 읽었는데 지우면 사진을 다 잃는다), 그리고 앱이 이 창 하나에서만 열려 있을 때만 —
   // 처음 연 창이 잠금을 닫힐 때까지 쥐고 있어서, 다른 창이 사진을 쓰는 도중에 지우지 않는다. 잠금을 못 쓰는 브라우저면 정리하지 않는다
