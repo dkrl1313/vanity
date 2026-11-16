@@ -199,6 +199,7 @@ function group(p) {                           // 주기 묶음. 씻어내는 클
   return 'daily';
 }
 const clash = (p, t) => !!p?.when && group(p) === 'daily' && p.when !== t;      // 아침만·저녁만으로 고른 제품이 다른 시간 자리에 있나 (레티놀·각질·팩은 쓰는 때를 안 따름)
+const acidic = p => p.actives.includes('acid');      // 각질 성분(산·효소)이 든 제품
 const vitcAm = p => !p.when && p.actives.includes('vitc') && p.cat !== 'cleanser' && CATS[p.cat][1] === 'both';      // 바르는 비타민C는 아침으로 (쓰는 때를 직접 고르면 그쪽)
 function fits(p, d, t, calm) {                // 이 제품을 d요일 t(am/pm)에 써도 되는가
   const when = CATS[p.cat][1], g = group(p);
@@ -222,25 +223,28 @@ function generate(products, calm, now) {
     const activeDay = calm || usable.some(p => (group(p) === 'retinol' || group(p) === 'acid') && fits(p, d, 'pm', calm));
     for (const t in SLOTS) {
       day[t] = [];
-      // 슬리핑팩을 쓰는 저녁엔 크림을 뺀다 — 앞 단계가 무거우면 팩이 안 마르고 밀린다. 로션까지 바르고 팩으로 마무리
-      const sleeping = usable.some(p => p.cat === 'sleep' && fits(p, d, t, calm));
       // 레티놀·각질 성분은 한 저녁에 하나만 — 종류(토너·마스크 등)가 달라도 그 성분 제품끼리 저녁마다 돌려 쓴다
       const only = {};
       for (const g of ['retinol', 'acid']) {
         const c = usable.filter(p => group(p) === g && fits(p, d, t, calm));
         if (c.length) only[g] = next(g, c).id;
       }
+      const ok = p => fits(p, d, t, calm) && !(only[group(p)] && only[group(p)] !== p.id);      // 이 자리에 써도 되고 한 저녁 하나 규칙도 통과
+      // 슬리핑팩을 쓰는 저녁엔 크림을 뺀다 — 앞 단계가 무거우면 팩이 안 마르고 밀린다. 한 저녁 하나 규칙에 밀려 안 들어가는 팩은 셈하지 않는다
+      const sleeping = usable.some(p => p.cat === 'sleep' && ok(p));
       for (const cat of ORDER) {
         if (sleeping && cat === 'cream') continue;
-        let fit = usable.filter(p => p.cat === cat && fits(p, d, t, calm) && !(only[group(p)] && only[group(p)] !== p.id));
-        // 레티놀·각질 날엔 각질 성분 없는 클렌저로 — 자극이 겹치지 않게. 피부 보호 규칙이라 쓰는 때(아침만·저녁만)보다 우선, 순한 클렌저가 없으면 그대로
+        let fit = usable.filter(p => p.cat === cat && ok(p));
+        // 레티놀·각질 날엔 각질 성분 없는 클렌저·클렌징오일로 — 자극이 겹치지 않게. 피부 보호 규칙이라 쓰는 때(아침만·저녁만)보다 우선, 순한 것이 없으면 그대로
         let swap = '';
-        if (cat === 'cleanser' && activeDay && fit.some(p => p.actives.includes('acid'))) {
-          const calmFit = fit.filter(p => !p.actives.includes('acid'));      // 원래 그 시간에 쓰던 순한 클렌저가 있으면 그것부터
-          const mild = calmFit.length ? calmFit : usable.filter(p => p.cat === cat && !p.actives.includes('acid'));
+        if ((cat === 'cleanser' || cat === 'oil') && activeDay && fit.some(acidic)) {
+          const calmFit = fit.filter(p => !acidic(p));      // 원래 그 시간에 쓰던 순한 것이 있으면 그것부터
+          const mild = calmFit.length ? calmFit : usable.filter(p => p.cat === cat && !acidic(p));
           if (mild.length) { fit = mild; swap = '~'; }      // 순번은 따로 센다 — 평소 저녁 클렌저 돌려 쓰기가 한쪽으로 쏠리지 않게
         }
-        const due = fit.filter(p => group(p) !== 'daily' || vitcAm(p));           // 요일·시간이 정해진 성분이 그 자리를 먼저 차지
+        // 요일·시간이 정해진 성분이 그 자리를 먼저 차지. 비타민C 아침 우선권은 그 시간으로 쓰는 때를 고른 제품이 없을 때만 (아침만 세럼이 한 번도 못 나오지 않게)
+        const pinned = fit.some(p => p.when === t);
+        const due = fit.filter(p => group(p) !== 'daily' || (vitcAm(p) && !pinned));
         const pool = due.length ? due : fit;
         if (!pool.length) continue;
         // ponytail: 같은 종류가 여러 개면 날마다 번갈아 쓴다(아침·저녁 따로 센다). 제형·궁합까지 보려면 규칙 추가
@@ -251,8 +255,12 @@ function generate(products, calm, now) {
     // 그 자리에 같은 성분 제품이 아직 없을 때만(한 저녁에 하나 규칙 유지), 나머지는 쓰는 때와 상관없이 붙인다 — 사용자가 묶었으니까
     for (const t in SLOTS) for (const id of [...day[t]]) {
       const q = byId.get(byId.get(id)?.pair);
-      if (!q || day[t].includes(q.id) || !CATS[q.cat][1]) continue;
-      if (group(q) !== 'daily' && (!fits(q, d, t, calm) || day[t].some(x => group(byId.get(x)) === group(q)))) continue;
+      if (!q || !CATS[q.cat][1]) continue;
+      if (group(q) !== 'daily' && (!fits(q, d, t, calm) || day[t].some(x => x !== q.id && group(byId.get(x)) === group(q)))) continue;
+      if (activeDay && (q.cat === 'cleanser' || q.cat === 'oil') && acidic(q)) continue;      // 레티놀·각질 날엔 각질 클렌저를 붙이지 않는다
+      const j = day[t].indexOf(q.id);
+      if (j >= 0 && j < day[t].indexOf(id)) continue;      // 이미 앞에 있으면 그대로
+      if (j >= 0) day[t].splice(j, 1);                      // 뒤에 있으면 바로 앞으로 옮긴다
       day[t].splice(day[t].indexOf(id), 0, q.id);
     }
     return day;
@@ -405,12 +413,15 @@ const sub = p => [CATS[p.cat][0], ...p.actives.map(a => ACTIVES[a]), ...(p.when 
 const fail = e => toast(`저장하지 못했어요. 저장 공간이나 브라우저 설정을 확인해 주세요. (${e?.name ?? '오류'})`, true);
 // ponytail: 바뀔 때마다 state 를 통째로 다시 쓴다(썸네일 포함). 피부 기록이 수백 건을 넘어 느려지면 기록을 키별로 쪼갤 것
 // noSave: 시작할 때 저장된 내용을 못 읽었으면 쓰지 않는다 — 빈 상태로 기존 기록을 덮어쓰지 않게
-const save = () => (noSave ? Promise.resolve(false) : idb.set('state', state).then(() => true, e => (fail(e), false)));
-// 자동 루틴이면 다시 짜고, 직접 고친 루틴이면 「쓰는 때」와 다른 시간 자리에 있는 제품만 뺀다 (나머지 배치는 그대로)
+// 다른 창(홈 화면 앱·브라우저 탭·화면 분할)이 저장하면 알린다 — 오래된 창이 새 기록을 덮어쓰지 않게 (받는 쪽은 reload)
+const bc = 'BroadcastChannel' in window ? new BroadcastChannel('vanity') : null;
+const save = () => (noSave ? Promise.resolve(false) : idb.set('state', state).then(() => (bc?.postMessage('saved'), true), e => (fail(e), false)));
+// 자동 루틴이면 다시 짠다. 직접 고친 루틴은 그대로 둔다 — 자동 때 순한 세안·먼저 바를 제품으로 들어간 자리도 사용자 것이 된다
 function arrange() {
   if (!state.routine.manual) state.routine.days = generate(state.products, isCalm(state.logs, today()), today());
-  else for (const day of state.routine.days) for (const t in SLOTS) day[t] = day[t].filter(id => !clash(product(id), t));
 }
+// 직접 고친 루틴에서 쓰는 때를 아침만·저녁만으로 바꾸면, 그 제품만 반대 시간 자리에서 뺀다
+const dropClash = p => { if (state.routine.manual) for (const day of state.routine.days) for (const t in SLOTS) if (clash(p, t)) day[t] = day[t].filter(id => id !== p.id); };
 function commit() {                           // 모든 변경의 끝: 자동 루틴 갱신 → 저장 → 다시 그리기. 저장 성공 여부를 돌려준다
   arrange();
   const saved = save(); render(); return saved;
@@ -463,14 +474,14 @@ function viewRoutine() {
       const pairTag = ids.some(x => byId.get(x)?.pair === p.id) ? '<span class="tag">함께</span>' : '';      // 다음 제품과 함께 바르려고 붙은 것
       const hot = pairTag + (group(p) === 'retinol' ? '<span class="tag on">레티놀</span>' : group(p) === 'acid' ? '<span class="tag on">각질</span>' : '');      // 포장이 비슷한 일반 제품과 헷갈리지 않게
       const warn = expired(p, now) ? '<span class="tag bad">기한 지남</span>' : !p.opened ? '<span class="tag warn">미개봉</span>'
-        : !R.manual && clash(p, t) ? `<span class="tag">${calmNow ? '예민한 주' : R.days[dayIdx].pm.some(id => byId.get(id) && group(byId.get(id)) === 'retinol') ? '레티놀 날' : '각질 날'} 순한 세안</span>` : '';      // 자동 루틴에서 쓰는 때와 다른 자리 = 순한 클렌저 교체
+        : !R.manual && clash(p, t) && (p.cat === 'cleanser' || p.cat === 'oil') ? `<span class="tag">${calmNow ? '예민한 주' : R.days[dayIdx].pm.some(id => byId.get(id) && group(byId.get(id)) === 'retinol') ? '레티놀 날' : '각질 날'} 순한 세안</span>` : '';      // 자동 루틴에서 쓰는 때와 다른 자리 = 순한 클렌저 교체
       const ctl = editing ? `<span class="ctl">
         <button id="u-${t}-${i}" data-act="move" data-t="${t}" data-i="${i}" data-by="-1" aria-label="${esc(p.name)} 위로" ${i ? '' : 'disabled'}>↑</button>
         <button id="w-${t}-${i}" data-act="move" data-t="${t}" data-i="${i}" data-by="1" aria-label="${esc(p.name)} 아래로" ${i < ids.length - 1 ? '' : 'disabled'}>↓</button>
         <button id="x-${t}-${i}" data-act="drop" data-t="${t}" data-i="${i}" aria-label="${esc(p.name)} 빼기">✕</button></span>` : '';
       return `<li><button class="what" data-act="editProduct" data-id="${esc(p.id)}"><b>${esc(p.name)}</b><small>${sub(p)}</small>${p.memo ? `<small class="memo">📝 ${esc(p.memo)}</small>` : ''}</button>${hot}${warn}${ctl}</li>`;
     }).join('');
-    const rest = editing ? state.products.filter(p => !ids.includes(p.id) && !clash(p, t)).sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat)) : [];
+    const rest = editing ? state.products.filter(p => !ids.includes(p.id)).sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat)) : [];
     const add = rest.length ? `<select data-add="${t}" aria-label="${SLOTS[t]} 루틴에 제품 추가"><option value="">＋ 제품 추가</option>${rest.map(p =>
       `<option value="${esc(p.id)}">${esc(p.name)} (${CATS[p.cat][0]}${p.opened ? '' : ' · 미개봉'})</option>`).join('')}</select>` : '';
     return `<section class="card"><h2>${t === 'am' ? '☀️' : '🌙'} ${SLOTS[t]}</h2>${rows ? `<ol class="steps">${rows}</ol>` : '<p class="muted">비어 있어요</p>'}${add}</section>`;
@@ -512,7 +523,7 @@ function viewProducts() {
       ${r === 'sealed' ? `<button id="open-${esc(p.id)}" class="chip" data-act="open" data-id="${esc(p.id)}" aria-label="${esc(p.name)} 오늘 개봉" title="눌러서 오늘 개봉으로">미개봉</button>`
         : `<span class="tag ${r === 'in' ? 'on' : r === 'out' ? 'warn' : ''}">${{ in: '루틴 포함', out: '루틴에 없음', skip: '루틴 제외' }[r]}</span>`}</article>`).join('');
   return `<div class="adds"><button id="add" class="primary" data-act="add">＋ 직접 등록</button>
-    <label class="btn"><input type="file" accept="image/*" class="sr" data-pick="product">📷 사진으로 등록</label></div>` + (state.products.length
+    <label class="btn"><input type="file" accept="image/*" class="sr" data-pick="product">📷 사진으로 등록</label></div>` + (state.products.length || state.done.length
     ? `<div class="filters" role="group" aria-label="걸러 보기">${chips}</div>`
       + ((n => n && (filter === 'all' || filter === 'none') ? `<button id="fill" class="wide" data-act="fillNext">📷 기한 없는 ${n}개 하나씩 채우기</button>` : '')(rows.filter(r => !r.e).length))
       + (cards || '<p class="empty">해당하는 화장품이 없어요</p>')
@@ -671,6 +682,7 @@ function shrink(file, max, q) {               // 긴 변 max px JPEG data URL �
   });
 }
 async function exportAll() {
+  if (noSave) return toast('저장된 내용을 읽지 못한 상태라 백업을 만들 수 없어요. 새로고침해 주세요.', true);      // 빈 상태를 백업으로 내보내지 않게
   const photos = Object.create(null);
   for (const l of state.logs) if (l.thumb) photos[l.id] = await idb.get('photo:' + l.id);
   // ponytail: 사진까지 JSON 한 파일로 내보낸다. 사진이 수백 장이라 파일이 무거워지면 zip·분할로
@@ -708,6 +720,7 @@ async function importFile(file) {
       if (l.thumb && isPhoto(ph)) await idb.set('photo:' + l.id, ph);
     }
     await idb.set('state', next);
+    noSave = false;                           // 가져온 내용이 저장됐으니 이제부터 고친 것도 저장한다
   } catch (e) { return fail(e); }             // 그때 먼저 써 둔 사진은 다음 시작 때 sweepPhotos 가 치운다
   const keep = new Set(next.logs.map(l => l.id));
   for (const l of state.logs) if (!keep.has(l.id)) idb.del('photo:' + l.id).catch(() => {});
@@ -863,7 +876,7 @@ function readGemini(r) {
   const text = (c?.content?.parts ?? []).filter(p => !p.thought && typeof p.text === 'string').map(p => p.text).join('');
   // 답 없이 OTHER·RECITATION 등으로 끝나면 사실상 거절 — 다시 해도 같아서 무료 한도만 쓴다
   if (c && !text && !/^(STOP|MAX_TOKENS)$/.test(c.finishReason ?? '')) throw new Error('AI가 이 사진은 분석하지 않았어요.');
-  try { return JSON.parse(text); } catch { throw new Error('분석 결과를 읽지 못했어요. 다시 해 주세요.'); }
+  try { return JSON.parse(text); } catch { throw Object.assign(new Error('분석 결과를 읽지 못했어요. 다시 해 주세요.'), { next: true }); }      // 잘리거나 깨진 답은 다른 모델로
 }
 // 결과는 AI가 체크했던 상태만 바꾸고(내가 고른 건 그대로) 메모의 'AI:' 줄을 바꾼다 — 저장 전에 고칠 수 있다
 async function runAnalysis(form) {
@@ -912,7 +925,7 @@ async function fillFromPhoto(form, file) {
     // 이미 등록한 제품의 수정 창이면 첫 제품만 쓰고(나머지를 새 등록으로 띄우지 않음), 직접 고른 종류도 그대로 둔다
     const it = items[0], cur = readProduct(form), editing = !!form.dataset.id;
     if (!editing) queue = [...items.slice(1), ...queue];  // 앞 사진에서 남아 있던 제품은 뒤에 그대로
-    productForm({ ...cur, name: cur.name || it.name, cat: editing && cur.cat !== 'etc' ? cur.cat : it.cat, actives: [...cur.actives, ...it.actives],
+    productForm({ ...cur, name: cur.name || it.name, cat: cur.cat !== 'etc' && (editing || cur.name) ? cur.cat : it.cat !== 'etc' ? it.cat : cur.cat, actives: [...cur.actives, ...it.actives],
       expiry: it.expiry || cur.expiry, pao: it.pao || cur.pao }, !editing);
     const found = [it.expiry && `유통기한 ${it.expiry}`, it.pao && `개봉 후 ${it.pao}개월`, it.actives.length && `성분 ${it.actives.map(a => ACTIVES[a]).join('·')}`].filter(Boolean);
     const o = dlg.querySelector('.ai');
@@ -927,7 +940,7 @@ async function fillFromPhoto(form, file) {
 
 /* ───────── 동작 ───────── */
 // 점검 창의 적용 버튼을 「적용됨」으로 바꾼다 (같은 제품을 가리킨 버튼 모두)
-const applied = (act, id, label) => { for (const b of dlg.querySelectorAll(`[data-act="${act}"][data-id="${id}"]`)) { b.disabled = true; b.textContent = label; } };
+const applied = (act, id, label) => { for (const b of dlg.querySelectorAll(`[data-act="${act}"][data-id="${CSS.escape(id)}"]`)) { b.disabled = true; b.textContent = label; } };
 const ACT = {
   tab(d) { tab = d.tab; editing = false; render(); scrollTo(0, 0); },
   day(d) { dayIdx = +d.i; render(); },
@@ -955,7 +968,7 @@ const ACT = {
     const x = state.done.find(x => x.id === d.id); if (!x || !confirm(`‘${x.name}’ 다 쓴 기록을 지울까요?`)) return;
     state.done = state.done.filter(y => y !== x); commit();
   },
-  skip() { queue.length ? productForm(queue.shift(), true) : dlg.close(); },
+  skip() { rebuyFor = null; queue.length ? productForm(queue.shift(), true) : dlg.close(); },
   editProduct(d) { fill = null; productForm(product(d.id)); },
   fillNext() { fill = { ids: fillOrder(state.products), i: 0, done: 0 }; fillGo(0); },
   fillSkip() { if (fill) fillGo(1); },
@@ -980,7 +993,7 @@ const ACT = {
   },
   applyWhen(d) {                              // AI 점검 제안 → 쓰는 때 바꾸기
     const p = product(d.id); if (!p || !['am', 'pm'].includes(d.when)) return;
-    p.when = d.when; commit();
+    p.when = d.when; dropClash(p); commit();
     applied('applyWhen', d.id, `✓ ${d.when === 'am' ? '아침만' : '저녁만'}으로 바꿨어요`); toast(`‘${p.name}’을(를) ${d.when === 'am' ? '아침만' : '저녁만'}으로 바꿨어요`);
   },
   swap(d) {                                   // 다 쓴 제품을 목록·루틴에서 빼고, 고른 제품이 있으면 오늘 개봉 (직접 고친 루틴은 같은 자리에 바꿔 넣는다)
@@ -1006,7 +1019,7 @@ const ACT = {
   },
   backup() { backupForm(); },
   export() { exportAll().catch(() => toast('백업 파일을 만들지 못했어요', true)); },
-  close() { dlg.close(); },
+  close() { rebuyFor = null; dlg.close(); },
   analyze() { runAnalysis(dlg.querySelector('form')); },
   async saveKey() {
     const v = dlg.querySelector('[name=apiKey]').value.trim();
@@ -1060,7 +1073,9 @@ dlg.addEventListener('submit', async e => {
     const p = readProduct(f);
     if (!p.name) return;
     const i = state.products.findIndex(x => x.id === p.id);
+    const prevWhen = i < 0 ? '' : state.products[i].when;
     i < 0 ? state.products.push(p) : (state.products[i] = p);
+    if (p.when !== prevWhen) dropClash(p);
     if (rebuyFor && !f.dataset.id) { const x = state.done.find(x => x.id === rebuyFor); if (x) x.again = false; rebuyFor = null; }      // 다시 산 것을 등록했으면 재구매 목록에서 내린다
     if (!f.dataset.id && queue.length) { productForm(queue.shift(), true); toast(`‘${p.name}’ 저장했어요`); return void commit(); }      // 사진에서 읽은 다음 제품
     if (fill && f.dataset.id && f.dataset.id === fill.ids[fill.i]) {      // 기한 채우기 중이면 저장하고 다음 제품으로
@@ -1086,8 +1101,14 @@ function refresh() {
   if (document.hidden || !state || shownDay === today()) return;
   shownDay = today(); dayIdx = todayIdx(); commit();
 }
-document.addEventListener('visibilitychange', refresh);
-addEventListener('pageshow', refresh);
+// 다른 창이 저장했거나 이 창이 다시 보이면 저장소의 최신 내용으로 바꾼다 (못 읽었던 상태면 건드리지 않음)
+async function reload() {
+  if (noSave || !state) return;
+  try { const saved = await idb.get('state'); if (saved != null) { state = cleanState(saved); arrange(); render(); } } catch {}
+}
+bc?.addEventListener('message', () => reload());
+document.addEventListener('visibilitychange', () => { if (!document.hidden) reload().then(refresh); });
+addEventListener('pageshow', () => reload().then(refresh));
 
 /* ───────── 자체 점검: index.html?test ───────── */
 function selfTest() {
@@ -1163,6 +1184,17 @@ function selfTest() {
     ['a', 'e', 'c'], '기한 하나씩 채우기 순서: 기한 모르는 것만, 개봉한 것 먼저·이름 순');
   eq(cleanState({ done: [{ name: ' 토너 ', cat: 'nope', actives: ['acid', 'x'], openedAt: '2026-10-01', doneAt: '2026-11-16', again: 1 }, { name: '' }, 'junk'] }).done.map(({ id, ...x }) => x),
     [{ name: '토너', cat: 'etc', actives: ['acid'], when: '', openedAt: '2026-10-01', doneAt: '2026-11-16', again: true }], '다 쓴 제품 기록 정리');
+  const sp1 = generate([P({ id: 'rsp', cat: 'sleep', actives: ['retinol'] }), P({ id: 'rse', cat: 'serum', actives: ['retinol'] }), P({ id: 'lo', cat: 'lotion' }), P({ id: 'cr', cat: 'cream' })], false, '2026-11-16');
+  ok(sp1.every(d => d.pm.includes('rsp') || d.pm.includes('cr')), '슬리핑팩이 실제로 안 들어간 저녁엔 크림을 빼지 않는다');
+  const mv = generate([P({ id: 'T', cat: 'toner', pair: 'E' }), P({ id: 'E', cat: 'essence' })], false, '2026-11-16');
+  ok(mv.every(d => d.am.indexOf('E') < d.am.indexOf('T') && d.pm.indexOf('E') < d.pm.indexOf('T')), '먼저 바를 제품이 뒤에 있으면 바로 앞으로 옮긴다');
+  const vs = generate([P({ id: 'S', cat: 'serum', when: 'am' }), P({ id: 'V', cat: 'serum', actives: ['vitc'] })], false, '2026-11-16');
+  ok(vs.some(d => d.am.includes('S')) && vs.some(d => d.am.includes('V')), '아침만 세럼이 비타민C에 밀려 한 번도 안 나오지 않는다');
+  const oi = generate([P({ id: 'bo', cat: 'oil', actives: ['acid'] }), P({ id: 'po', cat: 'oil' }), P({ id: 'rse', cat: 'serum', actives: ['retinol'] })], false, '2026-11-16');
+  eq([0, 2, 4].map(i => oi[i].pm[0]), ['po', 'po', 'po'], '레티놀 날엔 각질 클렌징오일도 순한 것으로');
+  const pc = generate([P({ id: 'gel', cat: 'cleanser', pair: 'enz' }), P({ id: 'enz', cat: 'cleanser', actives: ['acid'] }), P({ id: 'rse', cat: 'serum', actives: ['retinol'] })], false, '2026-11-16');
+  ok([0, 2, 4].every(i => !pc[i].pm.includes('enz') && !pc[i].am.includes('enz')), '먼저 바를 제품으로 묶어도 레티놀 날엔 각질 클렌저를 붙이지 않는다');
+  ok((() => { try { readGemini({ candidates: [{ content: { parts: [{ text: '{"ok":' }] }, finishReason: 'MAX_TOKENS' }] }); } catch (e) { return e.next === true; } })(), '깨진 AI 답은 다음 모델로 넘긴다');
   const ac = generate([P({ id: 'pad', cat: 'toner', actives: ['acid'] }), P({ id: 'plain', cat: 'toner' }), P({ id: 'am', cat: 'mask', actives: ['acid'] })], false, '2026-11-16');
   eq([ac[1].pm, ac[5].pm, ac.every(d => d.pm.filter(i => i === 'pad' || i === 'am').length <= 1)], [['pad'], ['plain', 'am'], true], '각질 성분은 한 저녁에 하나만: 화 패드, 토 마스크');
   const gp = ps => gaps(ps, '2026-11-16').map(s => (s.includes('1차') ? 'oil' : 'sun'));
