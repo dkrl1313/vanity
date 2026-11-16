@@ -57,6 +57,7 @@ nav button[aria-current] { color: var(--accent); font-weight: 700; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px 16px; margin-bottom: 12px; }
 .tag { flex: none; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
 .tag.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+.tag.on { background: var(--soft); color: var(--accent); border-color: transparent; }
 .tag.bad { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
 .secret { -webkit-text-security: disc; }     /* 비밀번호 칸으로 두면 비밀번호 관리자가 키를 저장하려 든다 */
 .ai { margin: 0; background: var(--soft); border-radius: 12px; padding: 10px 14px; font-size: 14px; }
@@ -204,10 +205,10 @@ function fits(p, d, t, calm) {                // 이 제품을 d요일 t(am/pm)�
   if (vitcAm(p)) return t === 'am';
   return when === 'both' || when === t;
 }
-// 사용중·기한 안 지난 제품으로 일주일 루틴을 짠다 → [{am: [id…], pm: [id…]} × 7]
+// 개봉했고 기한 안 지난 제품으로 일주일 루틴을 짠다 (개봉 = 루틴 대상) → [{am: [id…], pm: [id…]} × 7]
 // calm = 피부가 예민한 주: 레티놀·각질케어를 뺀다
 function generate(products, calm, now) {
-  const usable = products.filter(p => p.inUse && !expired(p, now))
+  const usable = products.filter(p => p.opened && !expired(p, now))
     .sort((a, b) => (expiryOf(a) || '9').localeCompare(expiryOf(b) || '9'));      // 기한 임박한 것부터
   const turn = {}, next = (key, pool) => pool[(turn[key] = (turn[key] ?? -1) + 1) % pool.length];
   return DAYS.map((_, d) => {
@@ -223,44 +224,45 @@ function generate(products, calm, now) {
       for (const cat of ORDER) {
         let fit = usable.filter(p => p.cat === cat && fits(p, d, t, calm) && !(only[group(p)] && only[group(p)] !== p.id));
         // 레티놀·각질 제품을 쓰는 저녁엔 각질 성분 없는 클렌저로 — 자극이 겹치지 않게. 피부 보호 규칙이라 쓰는 때(아침만)보다 우선, 순한 클렌저가 없으면 그대로
+        let swap = '';
         if (cat === 'cleanser' && (only.acid || only.retinol) && fit.some(p => p.actives.includes('acid'))) {
           const calmFit = fit.filter(p => !p.actives.includes('acid'));      // 원래 그 시간에 쓰던 순한 클렌저가 있으면 그것부터
           const mild = calmFit.length ? calmFit : usable.filter(p => p.cat === cat && !p.actives.includes('acid'));
-          if (mild.length) fit = mild;
+          if (mild.length) { fit = mild; swap = '~'; }      // 순번은 따로 센다 — 평소 저녁 클렌저 돌려 쓰기가 한쪽으로 쏠리지 않게
         }
         const due = fit.filter(p => group(p) !== 'daily' || vitcAm(p));           // 요일·시간이 정해진 성분이 그 자리를 먼저 차지
         const pool = due.length ? due : fit;
         if (!pool.length) continue;
         // ponytail: 같은 종류가 여러 개면 날마다 번갈아 쓴다(아침·저녁 따로 센다). 제형·궁합까지 보려면 규칙 추가
-        day[t].push(next(cat + t + (due.length ? '*' : ''), pool).id);
+        day[t].push(next(cat + t + (due.length ? '*' : '') + swap, pool).id);
       }
     }
     return day;
   });
 }
-// 루틴에 흔히 필요한데 빠진 단계 (사용중·기한 안 지난 제품 기준)
+// 루틴에 흔히 필요한데 빠진 단계 (개봉했고 기한 안 지난 제품 기준)
 function gaps(products, now) {
-  const has = cat => products.some(p => p.inUse && !expired(p, now) && p.cat === cat), out = [];
-  if (!has('sun')) out.push('사용중인 선크림이 없어요. 낮에는 자외선 차단이 꼭 필요해서, 선크림을 등록하고 사용중으로 두면 아침 루틴 마지막에 넣어요.');
+  const has = cat => products.some(p => p.opened && !expired(p, now) && p.cat === cat), out = [];
+  if (!has('sun')) out.push('개봉한 선크림이 없어요. 낮에는 자외선 차단이 꼭 필요해서, 선크림을 등록하고 개봉으로 두면 아침 루틴 마지막에 넣어요.');
   if ((has('sun') || has('makeup')) && !has('oil')) out.push('선크림이나 메이크업을 한 날 저녁엔 클렌징오일·밤 같은 1차 세안제로 먼저 지우면 좋아요. 가지고 있다면 등록해 두세요.');
   return out;
 }
 const backupDue = (s, now) => !!(s.products.length || s.logs.length) && (!s.backupAt || daysBetween(s.backupAt, now) >= BACKUP_EVERY);
-// 사용중인데 이번 주 루틴에 한 번도 없는 제품. 루틴 제외 종류·기한 지남·예민한 주에 쉬는 성분은 원래 빠지거나 따로 안내하니 뺀다
+// 개봉했는데 이번 주 루틴에 한 번도 없는 제품. 루틴 제외 종류·기한 지남·예민한 주에 쉬는 성분은 원래 빠지거나 따로 안내하니 뺀다
 // → 자동 루틴이면 같은 종류가 자리 수(매일 7·팩 2)보다, 또는 레티놀·각질 성분 제품이 저녁 자리(레티놀 3·각질 2)보다 많아 밀린 것, 직접 고친 루틴이면 넣지 않은 것
 function missing(s, now) {
   const inWeek = new Set(s.routine.days.flatMap(d => [...d.am, ...d.pm])), calm = !s.routine.manual && isCalm(s.logs, now);
-  return s.products.filter(p => p.inUse && CATS[p.cat][1] && !expired(p, now) && !inWeek.has(p.id) && !(calm && ['retinol', 'acid'].includes(group(p))));
+  return s.products.filter(p => p.opened && CATS[p.cat][1] && !expired(p, now) && !inWeek.has(p.id) && !(calm && ['retinol', 'acid'].includes(group(p))));
 }
-// 다 쓴 제품 p 대신 쓸 만한 것: 안 쓰는 중이고 기한 안 지난 것 중 같은 종류 → 비슷한 종류, 성분이 같은 것, 이미 연 것, 기한 빠른 것 순으로 3개
+// 다 쓴 제품 p 대신 쓸 만한 것: 아직 안 뜯었고 기한 안 지난 것 중 같은 종류 → 비슷한 종류, 성분이 같은 것, 기한 빠른 것 순으로 3개 (개봉한 건 이미 루틴에서 돌아가고 있다)
 // ponytail: 종류·성분만 본다. 제형·피부 타입까지 따지려면 규칙이나 AI 판단을 더한다. 루틴에 안 넣는 종류(메이크업·바디·기타)는 안의 물건이 제각각이라 추천하지 않음
 const NEAR = { toner: ['essence'], essence: ['toner', 'serum'], serum: ['essence'], lotion: ['cream'], cream: ['lotion', 'sleep'], sleep: ['cream'] };
 function alternatives(p, products, now) {
   if (!CATS[p.cat][1]) return [];
   const rank = q => (q.cat === p.cat ? 0 : NEAR[p.cat]?.includes(q.cat) ? 1 : -1);
   const diff = q => Object.keys(ACTIVES).filter(a => p.actives.includes(a) !== q.actives.includes(a)).length;
-  return products.filter(q => q.id !== p.id && !q.inUse && !expired(q, now) && rank(q) >= 0)
-    .sort((a, b) => rank(a) - rank(b) || diff(a) - diff(b) || b.opened - a.opened || (expiryOf(a) || '9').localeCompare(expiryOf(b) || '9'))
+  return products.filter(q => q.id !== p.id && !q.opened && !expired(q, now) && rank(q) >= 0)
+    .sort((a, b) => rank(a) - rank(b) || diff(a) - diff(b) || (expiryOf(a) || '9').localeCompare(expiryOf(b) || '9'))
     .slice(0, 3);
 }
 function isCalm(logs, now) {                  // 가장 최근 피부 기록이 7일 안이고 '예민'이면 (앞날짜로 잘못 적은 기록은 무시)
@@ -306,12 +308,12 @@ const date = v => {                           // 2/30 같은 없는 날짜는 �
 const isPhoto = v => typeof v === 'string' && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(v);
 function cleanProduct(p) {
   p = p && typeof p === 'object' ? p : {};
-  const opened = !!p.opened || !!p.inUse;     // 사용중이면 개봉한 것
+  const opened = !!p.opened || !!p.inUse;     // 예전 백업의 「사용중」 표시도 개봉한 것으로
   return {
     id: text(p.id, 40) || uid(), name: text(p.name, 80), cat: typeof p.cat === 'string' && Object.hasOwn(CATS, p.cat) ? p.cat : 'etc',
     actives: Object.keys(ACTIVES).filter(a => Array.isArray(p.actives) && p.actives.includes(a)),
     expiry: date(p.expiry), opened, openedAt: opened ? date(p.openedAt) : '', pao: PAOS.includes(+p.pao) ? +p.pao : 0,
-    inUse: !!p.inUse, memo: text(p.memo, 300),
+    memo: text(p.memo, 300),
     when: ['am', 'pm'].includes(p.when) ? p.when : '',      // 쓰는 때: '' = 자동(종류·성분에 맞게), am = 아침만, pm = 저녁만
   };
 }
@@ -404,8 +406,8 @@ function render() {
 
 function viewRoutine() {
   const now = today(), R = state.routine, byId = new Map(state.products.map(p => [p.id, p]));
-  if (!R.manual && !state.products.some(p => p.inUse))
-    return `<div class="empty"><p><b>아직 루틴이 비어 있어요</b></p><p>화장품을 등록하고 ‘사용중’으로 두면<br>월~일 아침·저녁 루틴이 자동으로 짜여요.</p>
+  if (!R.manual && !state.products.some(p => p.opened))
+    return `<div class="empty"><p><b>아직 루틴이 비어 있어요</b></p><p>개봉한 화장품을 등록하면<br>월~일 아침·저녁 루틴이 자동으로 짜여요.</p>
       <button class="primary" data-act="tab" data-tab="products">화장품 등록하러 가기</button></div>`;
 
   const mark = i => { const g = R.days[i].pm.map(id => byId.get(id)).filter(Boolean).map(group);
@@ -414,11 +416,11 @@ function viewRoutine() {
 
   const notes = [];
   if (!R.manual && isCalm(state.logs, now)) notes.push('최근 피부 기록이 ‘예민’이라 레티놀·각질케어는 쉬어 가요.');
-  const gone = state.products.filter(p => p.inUse && expired(p, now)).length;
-  if (gone) notes.push(`기한이 지난 사용중 제품이 ${gone}개 있어요.${R.manual ? '' : ' 루틴에서는 뺐어요.'}`);
+  const gone = state.products.filter(p => p.opened && expired(p, now)).length;
+  if (gone) notes.push(`기한이 지난 개봉 제품이 ${gone}개 있어요.${R.manual ? '' : ' 루틴에서는 뺐어요.'}`);
   const out = missing(state, now).map(p => esc(p.name)).join(', ');
-  if (out) notes.push(R.manual ? `사용중인데 루틴에 없는 제품: ${out}`
-    : `이번 주 루틴에 자리가 없는 사용중 제품: ${out}. 같은 종류는 한 칸에 하나씩, 레티놀·각질 성분은 한 저녁에 하나씩 돌려 써서 자리가 모자라요. 직접 고치기로 넣거나, 지금 안 쓰는 건 미사용으로 바꿔 주세요.`);
+  if (out) notes.push(R.manual ? `개봉했는데 루틴에 없는 제품: ${out}`
+    : `이번 주 루틴에 자리가 없는 개봉 제품: ${out}. 같은 종류는 한 칸에 하나씩, 레티놀·각질 성분은 한 저녁에 하나씩 돌려 써서 자리가 모자라요. 꼭 쓰고 싶으면 직접 고치기로 넣어 주세요.`);
   notes.push(...gaps(state.products, now));
   if (backupDue(state, now)) notes.push(`${state.backupAt ? `마지막 백업이 ${daysBetween(state.backupAt, now)}일 전이에요.` : '아직 백업 파일을 만든 적이 없어요.'} 기록은 이 기기 브라우저에만 있어서 지워지면 되살릴 수 없어요.${standalone() ? '' : ' 홈 화면에 앱으로 설치해 두면 더 안전해요(⋯ 메뉴).'}
     <button data-act="export">백업 파일 내보내기</button>`);
@@ -427,7 +429,7 @@ function viewRoutine() {
     const ids = R.days[dayIdx][t];
     const rows = ids.map((id, i) => {
       const p = byId.get(id); if (!p) return '';
-      const warn = expired(p, now) ? '<span class="tag bad">기한 지남</span>' : !p.inUse ? '<span class="tag warn">미사용</span>'
+      const warn = expired(p, now) ? '<span class="tag bad">기한 지남</span>' : !p.opened ? '<span class="tag warn">미개봉</span>'
         : !R.manual && clash(p, t) ? '<span class="tag">각질 날 순한 세안</span>' : '';      // 자동 루틴에서 쓰는 때와 다른 자리 = 위 클렌저 교체
       const ctl = editing ? `<span class="ctl">
         <button id="u-${t}-${i}" data-act="move" data-t="${t}" data-i="${i}" data-by="-1" aria-label="${esc(p.name)} 위로" ${i ? '' : 'disabled'}>↑</button>
@@ -437,7 +439,7 @@ function viewRoutine() {
     }).join('');
     const rest = editing ? state.products.filter(p => !ids.includes(p.id) && !clash(p, t)).sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat)) : [];
     const add = rest.length ? `<select data-add="${t}" aria-label="${SLOTS[t]} 루틴에 제품 추가"><option value="">＋ 제품 추가</option>${rest.map(p =>
-      `<option value="${esc(p.id)}">${esc(p.name)} (${CATS[p.cat][0]}${p.inUse ? '' : ' · 미사용'})</option>`).join('')}</select>` : '';
+      `<option value="${esc(p.id)}">${esc(p.name)} (${CATS[p.cat][0]}${p.opened ? '' : ' · 미개봉'})</option>`).join('')}</select>` : '';
     return `<section class="card"><h2>${t === 'am' ? '☀️' : '🌙'} ${SLOTS[t]}</h2>${rows ? `<ol class="steps">${rows}</ol>` : '<p class="muted">비어 있어요</p>'}${add}</section>`;
   };
 
@@ -454,16 +456,19 @@ function badge(l) {
   return `<span class="tag ${l <= SOON ? 'warn' : ''}">${l ? 'D-' + l : '오늘까지'}</span>`;
 }
 function viewProducts() {
-  const now = today(), rows = state.products.map(p => ({ p, l: left(p, now), e: expiryOf(p) })), out = new Set(missing(state, now).map(p => p.id));
-  const F = { all: ['전체', () => true], use: ['사용중', r => r.p.inUse], sealed: ['미개봉', r => !r.p.opened], soon: ['임박·만료', r => r.l !== null && r.l <= SOON], none: ['기한 없음', r => !r.e] };
+  const now = today(), inWeek = new Set(state.routine.days.flatMap(d => [...d.am, ...d.pm]));
+  // 루틴 상태: sealed 미개봉 · skip 루틴에 안 넣는 종류 · in 이번 주 루틴에 있음 · out 개봉했는데 없음(만료·자리 부족·예민한 주·직접 고친 루틴)
+  const rows = state.products.map(p => ({ p, l: left(p, now), e: expiryOf(p), r: !p.opened ? 'sealed' : !CATS[p.cat][1] ? 'skip' : inWeek.has(p.id) ? 'in' : 'out' }));
+  const F = { all: ['전체', () => true], out: ['루틴에 없음', r => r.r === 'out'], sealed: ['미개봉', r => r.r === 'sealed'], soon: ['임박·만료', r => r.l !== null && r.l <= SOON], none: ['기한 없음', r => !r.e] };
   const chips = Object.entries(F).map(([k, [name, fn]]) =>
     `<button id="f-${k}" class="chip" data-act="filter" data-f="${k}" aria-pressed="${k === filter}">${name} ${rows.filter(fn).length}</button>`).join('');
   const cards = rows.filter(F[filter][1])
     .sort((a, b) => (a.e || '9').localeCompare(b.e || '9') || a.p.name.localeCompare(b.p.name, 'ko'))
-    .map(({ p, l, e }) => `<article class="card prod">
+    .map(({ p, l, e, r }) => `<article class="card prod">
       <button id="p-${esc(p.id)}" class="name" data-act="editProduct" data-id="${esc(p.id)}">${esc(p.name)}</button>${badge(l)}
-      <small>${sub(p)} · ${p.opened ? `개봉 ${p.openedAt}` : '미개봉'}${out.has(p.id) ? ' <span class="tag warn">루틴에 없음</span>' : ''}${e ? `<br>${e}까지${e === openLimit(p) ? ` (개봉 후 ${p.pao}개월)` : ''}` : ''}</small>
-      <button id="use-${esc(p.id)}" class="chip${p.inUse ? ' on' : ''}" data-act="use" data-id="${esc(p.id)}" aria-pressed="${p.inUse}" aria-label="${esc(p.name)} 사용중" title="눌러서 바꾸기">${p.inUse ? '사용중' : '미사용'}</button></article>`).join('');
+      <small>${sub(p)} · ${p.opened ? `개봉 ${p.openedAt}` : '미개봉'}${e ? `<br>${e}까지${e === openLimit(p) ? ` (개봉 후 ${p.pao}개월)` : ''}` : ''}</small>
+      ${r === 'sealed' ? `<button id="open-${esc(p.id)}" class="chip" data-act="open" data-id="${esc(p.id)}" aria-label="${esc(p.name)} 오늘 개봉" title="눌러서 오늘 개봉으로">미개봉</button>`
+        : `<span class="tag ${r === 'in' ? 'on' : r === 'out' ? 'warn' : ''}">${{ in: '루틴 포함', out: '루틴에 없음', skip: '루틴 제외' }[r]}</span>`}</article>`).join('');
   return `<div class="adds"><button id="add" class="primary" data-act="add">＋ 직접 등록</button>
     <label class="btn"><input type="file" accept="image/*" class="sr" data-pick="product">📷 사진으로 등록</label></div>` + (state.products.length
     ? `<div class="filters" role="group" aria-label="걸러 보기">${chips}</div>${cards || '<p class="empty">해당하는 화장품이 없어요</p>'}`
@@ -498,31 +503,30 @@ function productForm(p, fresh) {              // fresh = 사진에서 읽어 미
     <fieldset><legend>성분 — 들어 있으면 체크해요. 루틴의 요일·시간을 나눠요</legend><div class="checks">${Object.entries(ACTIVES).map(([k, v]) =>
       `<label class="pill"><input type="checkbox" name="actives" value="${k}" ${p.actives.includes(k) ? 'checked' : ''}> ${v}</label>`).join('')}</div></fieldset>
     <label>유통기한 (용기에 적힌 날짜) <input type="date" name="expiry" value="${p.expiry}"></label>
-    <label class="pill"><input type="checkbox" name="opened" ${p.opened ? 'checked' : ''}> 개봉함</label>
+    <label class="pill"><input type="checkbox" name="opened" ${p.opened ? 'checked' : ''}> 개봉함 (루틴에 들어가요)</label>
     <div class="two if-opened">
       <label>개봉일 <input type="date" name="openedAt" value="${p.openedAt}"></label>
       <label>개봉 후 사용기간 <select name="pao"><option value="0">모름</option>${PAOS.map(m => `<option value="${m}" ${m === p.pao ? 'selected' : ''}>${m}개월</option>`).join('')}</select></label>
     </div>
-    <label class="pill"><input type="checkbox" name="inUse" ${p.inUse ? 'checked' : ''}> 사용중 (루틴에 넣어요)</label>
     <label>메모 <textarea name="memo" rows="2" maxlength="300">${esc(p.memo)}</textarea></label>
     ${!isNew && p.opened ? `<button type="button" data-act="finish" data-id="${esc(p.id)}">✓ 다 썼어요 · 대신 쓸 것 찾기</button>` : ''}
     <div class="actions">${isNew ? (more ? '<button type="button" data-act="skip">건너뛰기</button>' : '') : `<button type="button" class="danger" data-act="delProduct" data-id="${esc(p.id)}">삭제</button>`}<span class="grow"></span>
       <button type="button" data-act="close">취소</button><button class="primary">저장</button></div></form>`);
 }
-function finishForm(p) {                      // 다 썼어요 → 안 쓰던 제품 중 대신 쓸 것을 골라 바로 사용중으로
+function finishForm(p) {                      // 다 썼어요 → 안 뜯은 제품 중 대신 쓸 것을 골라 바로 개봉
   const alts = alternatives(p, state.products, today());
   modal(`<form method="dialog">
     <h2>‘${esc(p.name)}’ 다 썼어요</h2>
-    ${alts.length ? `<p class="muted">안 쓰고 있던 것 중에 대신 쓸 만한 제품이에요. 고르면 사용중으로 바꾸고${state.routine.manual ? ' 루틴의 같은 자리에 넣어요.' : ' 루틴을 다시 짜요.'}</p>
-    <ul class="alts">${alts.map(q => `<li><span class="what"><b>${esc(q.name)}</b><small>${sub(q)} · ${q.opened ? '개봉' : '미개봉'}${expiryOf(q) ? ` · ${expiryOf(q)}까지` : ''}</small></span>
+    ${alts.length ? `<p class="muted">아직 안 뜯은 것 중에 대신 쓸 만한 제품이에요. 고르면 오늘 개봉한 것으로 기록하고${state.routine.manual ? ' 루틴의 같은 자리에 넣어요.' : ' 루틴을 다시 짜요.'}</p>
+    <ul class="alts">${alts.map(q => `<li><span class="what"><b>${esc(q.name)}</b><small>${sub(q)}${expiryOf(q) ? ` · ${expiryOf(q)}까지` : ''}</small></span>
       <button type="button" data-act="swap" data-id="${esc(p.id)}" data-to="${esc(q.id)}" aria-label="${esc(q.name)}(으)로 바꾸기">이걸로</button></li>`).join('')}</ul>`
-    : `<p class="muted">${CATS[p.cat][1] ? '안 쓰고 있는 제품 중에 대신 쓸 만한 같은 종류가 없어요.' : '메이크업·바디·기타는 대신 쓸 제품을 추천하지 않아요.'}</p>`}
+    : `<p class="muted">${CATS[p.cat][1] ? '아직 안 뜯은 제품 중에 대신 쓸 만한 같은 종류가 없어요.' : '메이크업·바디·기타는 대신 쓸 제품을 추천하지 않아요.'}</p>`}
     <div class="actions"><span class="grow"></span><button type="button" data-act="close">취소</button>
       <button type="button" data-act="swap" data-id="${esc(p.id)}">${alts.length ? '추천 없이 정리' : '목록에서 빼기'}</button></div></form>`);
 }
 const readProduct = f => { const d = new FormData(f);
   return cleanProduct({ id: f.dataset.id, name: d.get('name'), cat: d.get('cat'), actives: d.getAll('actives'), expiry: d.get('expiry'),
-    opened: d.has('opened'), openedAt: d.get('openedAt'), pao: d.get('pao'), inUse: d.has('inUse'), memo: d.get('memo'), when: d.get('when') }); };
+    opened: d.has('opened'), openedAt: d.get('openedAt'), pao: d.get('pao'), memo: d.get('memo'), when: d.get('when') }); };
 
 async function logForm(l) {
   const saved = l?.thumb ? await idb.get('photo:' + l.id).catch(() => null) : null;
@@ -659,7 +663,7 @@ const PRODUCT_SCHEMA = {
   } } },
   required: ['items'], additionalProperties: false,
 };
-function cleanItems(r) {                      // AI 가 읽은 화장품도 믿지 않고 정해진 값만 (개봉·사용중은 사용자가 고른다)
+function cleanItems(r) {                      // AI 가 읽은 화장품도 믿지 않고 정해진 값만 (개봉은 사용자가 고른다)
   return (Array.isArray(r?.items) ? r.items : []).slice(0, 30).map(x => {
     const name = typeof x?.name === 'string' ? x.name.replace(/\s+/g, ' ') : '';
     // 이름에 성분 단어가 있는데 AI 가 빠뜨렸으면 이름 추측으로 채운다
@@ -750,7 +754,7 @@ async function runAnalysis(form) {
   } catch (e) { if (live()) out.textContent = e.message; }
   finally { if (seq === form._aiSeq) btn.disabled = save.disabled = false; }
 }
-// 화장품 사진 → 첫 제품으로 이 창을 채우고(이미 고른 개봉·사용중·메모는 그대로), 나머지는 저장할 때마다 하나씩 새 창으로. 사진은 저장하지 않는다
+// 화장품 사진 → 첫 제품으로 이 창을 채우고(이미 고른 개봉·메모는 그대로), 나머지는 저장할 때마다 하나씩 새 창으로. 사진은 저장하지 않는다
 // 같은 창에서 또 찍으면(앞면 다음 뒷면) 이미 채운 칸은 두고 새로 읽은 것만 더한다 — 성분은 합치고, 비어 온 기한은 그대로
 async function fillFromPhoto(form, file) {
   const out = form.querySelector('.ai'), lock = form.querySelectorAll('[data-pick=product], .primary');
@@ -802,13 +806,10 @@ const ACT = {
   add() { queue = []; productForm(); },
   skip() { queue.length ? productForm(queue.shift(), true) : dlg.close(); },
   editProduct(d) { productForm(product(d.id)); },
-  use(d) {
-    const p = product(d.id); if (!p) return;
-    if (!p.inUse && !p.opened) {              // 개봉일이 실수로 찍히지 않게 한 번 묻는다
-      if (!confirm(`‘${p.name}’은(는) 미개봉이에요.\n오늘 개봉한 것으로 기록하고 사용중으로 바꿀까요?`)) return;
-      p.opened = true; p.openedAt = today();
-    }
-    p.inUse = !p.inUse; commit();
+  open(d) {                                   // 미개봉 → 오늘 개봉 (개봉하면 루틴에 들어간다). 개봉일이 실수로 찍히지 않게 한 번 묻는다
+    const p = product(d.id); if (!p || p.opened) return;
+    if (!confirm(`‘${p.name}’을(를) 오늘 개봉한 것으로 기록할까요?\n개봉하면 루틴에 들어가요.`)) return;
+    p.opened = true; p.openedAt = today(); commit();
   },
   delProduct(d) {
     const p = product(d.id); if (!p || !confirm(`‘${p.name}’을(를) 삭제할까요?`)) return;
@@ -817,16 +818,16 @@ const ACT = {
     dlg.close(); commit();
   },
   finish(d) { const p = product(d.id); if (p) finishForm(p); },
-  swap(d) {                                   // 다 쓴 제품을 목록·루틴에서 빼고, 고른 제품이 있으면 사용중으로 (직접 고친 루틴은 같은 자리에 바꿔 넣는다)
+  swap(d) {                                   // 다 쓴 제품을 목록·루틴에서 빼고, 고른 제품이 있으면 오늘 개봉 (직접 고친 루틴은 같은 자리에 바꿔 넣는다)
     const p = product(d.id), q = d.to ? product(d.to) : null; if (!p) return;
     state.products = state.products.filter(x => x !== p);
     for (const day of state.routine.days) for (const t in SLOTS) {
       const a = day[t], i = a.indexOf(p.id);
       if (i >= 0) q && !a.includes(q.id) ? a.splice(i, 1, q.id) : a.splice(i, 1);
     }
-    if (q) { q.inUse = true; if (!q.opened) { q.opened = true; q.openedAt = today(); } }
+    if (q && !q.opened) { q.opened = true; q.openedAt = today(); }
     dlg.close(); commit();
-    toast(q ? `‘${q.name}’을(를) 사용중으로 바꿨어요` : `‘${p.name}’을(를) 목록에서 뺐어요`);
+    toast(q ? `‘${q.name}’을(를) 개봉해서 루틴에 넣었어요` : `‘${p.name}’을(를) 목록에서 뺐어요`);
   },
   addLog() { logForm(); },
   editLog(d) { logForm(state.logs.find(l => l.id === d.id)); },
@@ -860,15 +861,13 @@ view.addEventListener('change', e => {        // 루틴에 제품 추가 · 화�
   if (t && product(e.target.value)) { state.routine.days[dayIdx][t].push(e.target.value); manual(); }
 });
 
-dlg.addEventListener('input', e => {          // 화장품 폼: 이름으로 종류 추측, 개봉·사용중 맞물림
+dlg.addEventListener('input', e => {          // 화장품 폼: 이름으로 종류 추측, 개봉하면 개봉일 오늘
   const t = e.target, f = t.form;
   if (f?.dataset.form !== 'product') return;
   const el = f.elements;
   if (t.name === 'name' && f.dataset.auto) { const g = guess(t.value); el.cat.value = g.cat; for (const c of el.actives) c.checked = g.actives.includes(c.value); }
   if (t.name === 'cat' || t.name === 'actives') delete f.dataset.auto;        // 직접 고른 뒤에는 추측하지 않는다
-  if (t.name === 'inUse' && t.checked) el.opened.checked = true;
-  if (t.name === 'opened' && !t.checked) el.inUse.checked = false;
-  if ((t.name === 'opened' || t.name === 'inUse') && el.opened.checked && !el.openedAt.value) el.openedAt.value = today();
+  if (t.name === 'opened' && el.opened.checked && !el.openedAt.value) el.openedAt.value = today();
 });
 dlg.addEventListener('change', async e => {   // 사진·백업 파일 고르기
   const t = e.target, file = t.files?.[0];
@@ -924,7 +923,7 @@ function selfTest() {
   eq(addMonths('2026-01-31', 1), '2026-02-28', '1/31 + 1개월은 2월 말일');
   eq(addMonths('2024-01-31', 1), '2024-02-29', '윤년 2월');
   eq(addMonths('2026-11-30', 3), '2027-02-28', '해를 넘기는 달 더하기');
-  const P = o => cleanProduct({ name: 'x', inUse: true, ...o });
+  const P = o => cleanProduct({ name: 'x', opened: true, ...o });
   eq(expiryOf(P({ expiry: '2027-06-01', openedAt: '2026-01-10', pao: 12 })), '2027-01-10', '개봉 기한이 더 빠르면 그쪽');
   eq(expiryOf(P({ expiry: '2026-06-01', openedAt: '2026-01-10', pao: 12 })), '2026-06-01', '적힌 기한이 더 빠르면 그쪽');
   eq(expiryOf(cleanProduct({ name: 'x', expiry: '2027-06-01', openedAt: '2026-01-10', pao: 12 })), '2027-06-01', '미개봉이면 개봉 기한 무시');
@@ -941,7 +940,7 @@ function selfTest() {
 
   const ps = [P({ id: 'cl', cat: 'cleanser' }), P({ id: 'to', cat: 'toner' }), P({ id: 's', cat: 'serum' }), P({ id: 'sr', cat: 'serum', actives: ['retinol'] }),
     P({ id: 'sc', cat: 'serum', actives: ['vitc'] }), P({ id: 'c1', cat: 'cream' }), P({ id: 'c2', cat: 'cream' }), P({ id: 'su', cat: 'sun' }), P({ id: 'ex', cat: 'exfol' }),
-    P({ id: 'mk', cat: 'mask' }), P({ id: 'old', cat: 'eye', expiry: '2026-01-01' }), { ...P({ id: 'off', cat: 'lotion' }), inUse: false }, P({ id: 'lip', cat: 'makeup' })];
+    P({ id: 'mk', cat: 'mask' }), P({ id: 'old', cat: 'eye', expiry: '2026-01-01' }), { ...P({ id: 'off', cat: 'lotion' }), opened: false, openedAt: '' }, P({ id: 'lip', cat: 'makeup' })];
   const w = generate(ps, false, '2026-11-16'), all = w.flatMap(d => [...d.am, ...d.pm]);
   eq(w[0], { am: ['cl', 'to', 'sc', 'c1', 'su'], pm: ['cl', 'to', 'sr', 'c1'] }, '월요일 순서');
   eq(w.map(d => (d.am.includes('c1') ? 1 : 2) + (d.pm.includes('c1') ? 1 : 2) * 10), [11, 22, 11, 22, 11, 22, 11], '크림 2개는 날마다 번갈아');
@@ -953,7 +952,7 @@ function selfTest() {
   eq(w.map(d => +d.pm.includes('sr')), [1, 0, 1, 0, 1, 0, 0], '레티놀은 월·수·금 저녁');
   eq(w.map(d => +d.pm.includes('ex')), [0, 1, 0, 0, 0, 1, 0], '각질케어는 화·토 저녁');
   eq(w.map(d => +d.pm.includes('mk')), [0, 0, 0, 1, 0, 0, 1], '팩은 목·일 저녁');
-  ok(!['old', 'off', 'lip'].some(i => all.includes(i)), '만료·미사용·메이크업은 제외');
+  ok(!['old', 'off', 'lip'].some(i => all.includes(i)), '만료·미개봉·메이크업은 제외');
   ok(all.includes('c1') && all.includes('c2') && w.every(d => [d.am, d.pm].every(s => s.filter(i => i[0] === 'c' && i[1] !== 'l').length === 1)), '같은 종류는 한 칸에 하나씩 돌려 씀');
   const calm = generate(ps, true, '2026-11-16').flatMap(d => d.pm);
   ok(!calm.includes('sr') && !calm.includes('ex') && calm.includes('mk'), '예민하면 레티놀·각질케어만 쉼');
@@ -972,32 +971,34 @@ function selfTest() {
   const cl2 = generate([P({ id: 'foam', cat: 'cleanser', actives: ['acid'] }), P({ id: 'pad', cat: 'toner', actives: ['acid'] })], false, '2026-11-16');
   eq([cl.map(d => d.am[0]).join(), cl.map(d => d.pm[0]).join(), cl2.every(d => d.pm[0] === 'foam')], ['gel,gel,gel,gel,gel,gel,gel', 'foam,gel,foam,foam,foam,gel,foam', true],
     '각질 제품 쓰는 저녁엔 각질 성분 없는 클렌저로 (아침만 설정보다 우선), 순한 클렌저가 없으면 그대로');
+  const cl3 = generate([P({ id: 'foam', cat: 'cleanser', actives: ['acid'], when: 'pm' }), P({ id: 'soft', cat: 'cleanser' }), P({ id: 'gel', cat: 'cleanser', when: 'am' }), P({ id: 'pad', cat: 'toner', actives: ['acid'] })], false, '2026-11-16');
+  eq(cl3.map(d => d.pm[0]).join(), 'foam,soft,soft,foam,soft,soft,foam', '각질 날 순한 클렌저 교체는 평소 저녁 클렌저 순번과 따로 센다');
   const ac = generate([P({ id: 'pad', cat: 'toner', actives: ['acid'] }), P({ id: 'plain', cat: 'toner' }), P({ id: 'am', cat: 'mask', actives: ['acid'] })], false, '2026-11-16');
   eq([ac[1].pm, ac[5].pm, ac.every(d => d.pm.filter(i => i === 'pad' || i === 'am').length <= 1)], [['pad'], ['plain', 'am'], true], '각질 성분은 한 저녁에 하나만: 화 패드, 토 마스크');
   const gp = ps => gaps(ps, '2026-11-16').map(s => (s.includes('1차') ? 'oil' : 'sun'));
-  eq([gp([P({ cat: 'toner' })]), gp([P({ cat: 'sun' })]), gp([P({ cat: 'sun' }), P({ cat: 'oil' })]), gp([P({ cat: 'makeup' })]), gp([{ ...P({ cat: 'sun' }), inUse: false }])],
+  eq([gp([P({ cat: 'toner' })]), gp([P({ cat: 'sun' })]), gp([P({ cat: 'sun' }), P({ cat: 'oil' })]), gp([P({ cat: 'makeup' })]), gp([{ ...P({ cat: 'sun' }), opened: false }])],
     [['sun'], ['oil'], [], ['sun', 'oil'], ['sun']], '빠진 단계: 선크림 없음, 선크림·메이크업 쓰는데 1차 세안제 없음');
   const mk = (ps, manual, logs = []) => ({ products: ps, logs, routine: { manual, days: manual ? DAYS.map(() => ({ am: [], pm: [] })) : generate(ps, isCalm(logs, '2026-11-16'), '2026-11-16') } });
   eq([missing(mk(Array.from({ length: 8 }, (_, i) => P({ id: 't' + i, cat: 'toner' }))), '2026-11-16').map(p => p.id),
     missing(mk([P({ id: 'r', cat: 'serum', actives: ['retinol'] }), P({ id: 'lip', cat: 'makeup' }), P({ id: 'old', cat: 'cream', expiry: '2026-01-01' })], false, [{ date: '2026-11-15', tags: ['예민'] }]), '2026-11-16').map(p => p.id),
     missing(mk([P({ id: 'c', cat: 'cream' })], true), '2026-11-16').map(p => p.id)],
-    [['t7'], [], ['c']], '루틴에 없는 사용중 제품: 자리가 넘친 것만 (예민 주 쉬는 성분·메이크업·만료 제외), 직접 고친 루틴은 넣지 않은 것');
+    [['t7'], [], ['c']], '루틴에 없는 개봉 제품: 자리가 넘친 것만 (예민 주 쉬는 성분·메이크업·만료 제외), 직접 고친 루틴은 넣지 않은 것');
   const done = P({ id: 'done', cat: 'toner', actives: ['acid'] }), shelf = [done,
-    { ...P({ id: 'sealed', cat: 'toner', expiry: '2027-01-01' }), inUse: false, opened: false, openedAt: '' },
-    { ...P({ id: 'openAcid', cat: 'toner', actives: ['acid'], expiry: '2027-06-01' }), inUse: false },
-    { ...P({ id: 'ess', cat: 'essence' }), inUse: false }, P({ id: 'using', cat: 'toner' }),
-    { ...P({ id: 'gone', cat: 'toner', expiry: '2026-01-01' }), inUse: false }, { ...P({ id: 'cr', cat: 'cream' }), inUse: false }];
-  eq([alternatives(done, shelf, '2026-11-16').map(q => q.id), alternatives(P({ cat: 'makeup' }), [{ ...P({ cat: 'makeup' }), inUse: false }], '2026-11-16')],
-    [['openAcid', 'sealed', 'ess'], []], '다 쓴 제품 대체 추천: 같은 종류·같은 성분·연 것 먼저, 사용중·만료·다른 종류·메이크업 제외');
+    { ...P({ id: 'sealed', cat: 'toner', expiry: '2027-01-01' }), opened: false, openedAt: '' },
+    { ...P({ id: 'sealedAcid', cat: 'toner', actives: ['acid'], expiry: '2027-06-01' }), opened: false, openedAt: '' },
+    { ...P({ id: 'ess', cat: 'essence' }), opened: false }, P({ id: 'using', cat: 'toner' }),
+    { ...P({ id: 'gone', cat: 'toner', expiry: '2026-01-01' }), opened: false }, { ...P({ id: 'cr', cat: 'cream' }), opened: false }];
+  eq([alternatives(done, shelf, '2026-11-16').map(q => q.id), alternatives(P({ cat: 'makeup' }), [{ ...P({ cat: 'makeup' }), opened: false }], '2026-11-16')],
+    [['sealedAcid', 'sealed', 'ess'], []], '다 쓴 제품 대체 추천: 안 뜯은 것 중 같은 종류·같은 성분 먼저, 개봉한 것·만료·다른 종류·메이크업 제외');
   eq(cleanProduct({ name: 'B', cat: ['serum'] }).cat, 'etc', '종류 값이 배열이면 버림');
   eq([cleanAnalysis({ ok: true, tags: ['좋음', '건조', '<b>', '건조'], summary: '  볼이 건조해요 ' }), cleanAnalysis({ ok: false, tags: ['트러블'], summary: '너무 어두워요' }), cleanAnalysis(null)],
     [{ ok: true, tags: ['건조'], summary: '볼이 건조해요' }, { ok: false, tags: [], summary: '너무 어두워요' }, { ok: false, tags: [], summary: '' }], 'AI 결과 정리');
   eq(cleanAnalysis({ ok: true, tags: [], summary: '볼이 붉어요.\n\n피부과 상담을 권해요.' }).summary, '볼이 붉어요. 피부과 상담을 권해요.', 'AI 요약은 한 줄로');
   eq([...cleanItems({ items: [{ name: ' 라운드랩\n독도  토너 ', cat: 'toner', actives: ['acid', 'x'], expiry: '2027-06-31', pao: 12, opened: true, inUse: true },
     { name: '', cat: 'serum' }, { name: 'B', cat: 'nope', pao: 5, expiry: '2027-06-30' }, 'junk', { name: '구달 청귤 비타C 세럼', cat: 'serum', actives: [] }] }).map(({ id, ...p }) => p), cleanItems(null)],
-    [{ name: '라운드랩 독도 토너', cat: 'toner', actives: ['acid'], expiry: '', opened: false, openedAt: '', pao: 12, inUse: false, memo: '', when: '' },
-      { name: 'B', cat: 'etc', actives: [], expiry: '2027-06-30', opened: false, openedAt: '', pao: 0, inUse: false, memo: '', when: '' },
-      { name: '구달 청귤 비타C 세럼', cat: 'serum', actives: ['vitc'], expiry: '', opened: false, openedAt: '', pao: 0, inUse: false, memo: '', when: '' }, []], 'AI가 읽은 화장품 정리 (이름에 보이는 성분은 채움)');
+    [{ name: '라운드랩 독도 토너', cat: 'toner', actives: ['acid'], expiry: '', opened: false, openedAt: '', pao: 12, memo: '', when: '' },
+      { name: 'B', cat: 'etc', actives: [], expiry: '2027-06-30', opened: false, openedAt: '', pao: 0, memo: '', when: '' },
+      { name: '구달 청귤 비타C 세럼', cat: 'serum', actives: ['vitc'], expiry: '', opened: false, openedAt: '', pao: 0, memo: '', when: '' }, []], 'AI가 읽은 화장품 정리 (이름에 보이는 성분은 채움)');
   const G = (parts, finishReason = 'STOP') => ({ candidates: [{ content: { parts }, finishReason }] });
   eq(readGemini(G([{ text: '생각 중', thought: true }, { text: '{"ok":true,' }, { text: '"tags":["건조"],"summary":"s"}' }])), { ok: true, tags: ['건조'], summary: 's' }, 'Gemini 답: 생각 부분은 빼고 이어 붙여 읽기');
   const why = r => { try { readGemini(r); return 'ok'; } catch (e) { return /분석하지 않았/.test(e.message) ? 'blocked' : 'broken'; } };
@@ -1006,7 +1007,7 @@ function selfTest() {
 
   const cs = cleanState({ products: [{ id: 'a', name: ' A ', cat: 'constructor', pao: 5, actives: ['x', 'vitc'], inUse: 1 }, { id: 'a', name: '중복' }, { name: '  ' }, 7],
     routine: { manual: 1, days: [{ am: ['a', 'a', 'ghost'], pm: 'x' }] }, logs: [{ id: 'l', date: 'nope', thumb: 'javascript:alert(1)', tags: ['예민', '<b>'] }] });
-  eq(cs.products, [{ id: 'a', name: 'A', cat: 'etc', actives: ['vitc'], expiry: '', opened: true, openedAt: '', pao: 0, inUse: true, memo: '', when: '' }], '가져온 화장품 정리');
+  eq(cs.products, [{ id: 'a', name: 'A', cat: 'etc', actives: ['vitc'], expiry: '', opened: true, openedAt: '', pao: 0, memo: '', when: '' }], '가져온 화장품 정리 (옛 사용중 = 개봉)');
   eq([cs.routine.manual, cs.routine.days.length, cs.routine.days[0], cs.logs[0].thumb, cs.logs[0].tags, cs.logs[0].date === today()], [true, 7, { am: ['a'], pm: [] }, '', ['예민'], true], '가져온 루틴·기록 정리');
   eq(cleanState(cleanState(undefined)), { products: [], logs: [], routine: { manual: false, days: DAYS.map(() => ({ am: [], pm: [] })) }, backupAt: '' }, '빈 상태');
   const B = (backupAt, n = 1) => ({ products: Array(n).fill(P({})), logs: [], backupAt });
