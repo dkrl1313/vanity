@@ -55,6 +55,8 @@ nav button[aria-current] { color: var(--accent); font-weight: 700; }
 .tag { flex: none; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--bg); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
 .tag.warn { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
 .tag.bad { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
+.secret { -webkit-text-security: disc; }     /* 비밀번호 칸으로 두면 비밀번호 관리자가 키를 저장하려 든다 */
+.ai { margin: 0; background: var(--soft); border-radius: 12px; padding: 10px 14px; font-size: 14px; }
 .note { background: var(--warn-bg); color: var(--warn); border-radius: 12px; padding: 10px 14px; font-size: 14px; margin-bottom: 10px; }
 .empty { text-align: center; padding: 40px 12px; display: grid; gap: 10px; justify-items: center; color: var(--muted); }
 .empty b { color: var(--ink); font-size: 17px; }
@@ -124,7 +126,7 @@ form > label.btn, .btn { display: flex; align-items: center; justify-content: ce
 <body>
 <header>
   <h1>화장대</h1>
-  <button data-act="backup" aria-label="백업·복원" title="백업·복원">⋯</button>
+  <button data-act="backup" aria-label="설정·백업" title="설정·백업">⋯</button>
 </header>
 <main id="view"></main>
 <nav aria-label="화면">
@@ -267,6 +269,11 @@ function cleanLog(l) {
     id: text(l.id, 40) || uid(), date: date(l.date) || today(), tags: TAGS.filter(t => Array.isArray(l.tags) && l.tags.includes(t)),
     memo: text(l.memo, 500), thumb: isPhoto(l.thumb) ? l.thumb : '',      // thumb 가 있으면 원본 사진은 저장소의 photo:<id>
   };
+}
+function cleanAnalysis(r) {                   // AI 답도 믿지 않고 정해진 값만 남긴다. '좋음'은 다른 상태와 같이 두지 않는다
+  const tags = r?.ok === true ? TAGS.filter(t => Array.isArray(r.tags) && r.tags.includes(t)) : [];
+  return { ok: r?.ok === true, tags: tags.length > 1 ? tags.filter(t => t !== '좋음') : tags,
+    summary: text(typeof r?.summary === 'string' ? r.summary.replace(/\s+/g, ' ') : '', 300) };      // 한 줄로 — 메모의 'AI:' 줄 하나에 들어가게
 }
 function cleanState(s) {
   s = s && typeof s === 'object' ? s : {};
@@ -436,16 +443,23 @@ async function logForm(l) {
     <h2>피부 기록</h2>
     <img class="preview" alt="피부 사진" ${src ? `src="${esc(src)}"` : 'hidden'}>
     <label class="btn"><input type="file" accept="image/*" class="sr" data-pick="photo">📷 ${src ? '사진 바꾸기' : '사진 찍기·고르기'}</label>
+    <button type="button" data-act="analyze" ${src ? '' : 'hidden'}>✨ AI로 피부 상태 읽기</button>
+    <p class="ai" role="status" hidden></p>
     <label>날짜 <input type="date" name="date" required max="${today()}" value="${l?.date ?? today()}"></label>
     <fieldset><legend>피부 상태 — 가장 최근 기록이 ‘예민’이면 일주일 동안 자동 루틴에서 레티놀·각질케어를 빼요</legend><div class="checks">${TAGS.map(t =>
       `<label class="pill"><input type="checkbox" name="tags" value="${t}" ${l?.tags.includes(t) ? 'checked' : ''}> ${t}</label>`).join('')}</div></fieldset>
-    <label>메모 <textarea name="memo" rows="2" maxlength="500" placeholder="예: 턱에 트러블, 볼이 당김">${esc(l?.memo ?? '')}</textarea></label>
+    <label>메모 <textarea name="memo" rows="3" maxlength="500" placeholder="예: 턱에 트러블, 볼이 당김">${esc(l?.memo ?? '')}</textarea></label>
     <div class="actions">${l ? `<button type="button" class="danger" data-act="delLog" data-id="${esc(l.id)}">삭제</button>` : ''}<span class="grow"></span>
       <button type="button" data-act="close">취소</button><button class="primary">저장</button></div></form>`);
 }
 
-function backupForm() {
+async function backupForm() {
+  const key = await getKey() || '';
   modal(`<form method="dialog">
+    <h2>AI 피부 분석</h2>
+    <p class="muted">피부 기록에 사진을 넣으면 Claude가 사진을 보고 상태 칸과 메모를 채워 줘요. 사진은 분석할 때만 Anthropic API로 보내고, 요금(보통 한 번에 수십 원)은 내 API 계정에서 나가요. 키는 이 브라우저에만 저장되고 백업 파일에는 들어가지 않아요. 이 앱 전용 키를 새로 만들고 Anthropic 콘솔에서 월 사용 한도를 걸어 두길 권해요.</p>
+    ${key ? `<p>등록된 키 ${esc(key.slice(0, 10))}…${esc(key.slice(-4))}</p><button type="button" class="danger" data-act="delKey">키 지우기</button>`
+      : `<label>Anthropic API 키 <input name="apiKey" class="secret" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="sk-ant-…"></label><button name="saveKey">키 저장</button>`}
     <h2>백업·복원</h2>
     <p class="muted">모든 내용은 이 기기의 이 브라우저 안에만 저장돼요. 브라우저 데이터를 지우거나 기기를 바꾸면 사라지니 가끔 백업 파일로 내려받아 두세요.</p>
     <p>화장품 ${state.products.length}개 · 피부 기록 ${state.logs.length}건</p>
@@ -500,6 +514,88 @@ async function importFile(file) {
   state = next; dlg.close(); commit(); toast('백업을 가져왔어요');
 }
 
+/* ───────── AI 피부 분석 (내 Anthropic API 키로 이 브라우저에서 바로 호출 — 서버 없음) ───────── */
+// 공식 SDK(@anthropic-ai/sdk 1.3.0 + helpers/json-schema)를 esbuild 로 한 파일로 묶어 앱 옆에 둔다 — 키·사진을 다루니 CDN 빌드에 기대지 않는다.
+// 버전을 올릴 땐 같은 방법으로 다시 묶는다: esbuild entry.mjs --bundle --format=esm --platform=browser --target=es2020,safari15 --minify
+const SDK = './anthropic-sdk-1.3.0.mjs';
+// 저장소 연결이 끊겼으면 idb 가 다시 열도록 한 번 더 읽는다. 끝내 못 읽으면 null ('' = 키 없음 과 구별)
+const getKey = () => idb.get('apiKey').catch(() => idb.get('apiKey')).then(v => (typeof v === 'string' ? v : ''), () => null);
+const SKIN_PROMPT = `피부 관리 일기 앱이에요. 사용자가 자기 얼굴·피부를 찍은 사진 한 장을 보고, 눈에 보이는 피부 상태만 기록해 주세요. 진단이 아니라 기록이에요.
+- tags: 아래 목록에서 사진에 분명히 보이는 것만 고릅니다. 조명·필터·화질 때문에 확실하지 않으면 넣지 않아요.
+  좋음(눈에 띄는 문제 없음) · 건조(각질, 들뜸, 당김) · 유분(번들거림) · 트러블(여드름, 뾰루지) · 홍조(붉은 기) · 예민(붉은 기에 오돌토돌함·각질이 겹쳐 자극받은 것처럼 보임). '좋음'은 다른 태그와 함께 쓰지 않아요.
+- summary: 한국어 두 문장 이내, 쉬운 말로. 어디에(이마·볼·코·턱 등) 무엇이 보이는지 적어요. 화장품을 추천하거나 병명을 말하지 않아요. 번지는 발진·진물·출혈처럼 병원에 가 볼 만한 모습이면 피부과 상담을 권하는 말을 한 문장 덧붙여요.
+- ok: 피부가 충분히 보이는 사진이면 true. 피부가 안 보이거나 너무 흐리거나 어두우면 false 로 두고 tags 는 비우고, summary 에 다시 찍는 방법을 짧게 적어요.`;
+const SKIN_SCHEMA = {
+  type: 'object',
+  properties: { ok: { type: 'boolean' }, tags: { type: 'array', items: { type: 'string', enum: TAGS } }, summary: { type: 'string' } },
+  required: ['ok', 'tags', 'summary'], additionalProperties: false,
+};
+async function analyzeSkin(photo, apiKey) {
+  let A, format;
+  try {
+    const sdk = await import(SDK);
+    A = sdk.default;
+    // SDK 의 스키마 변환은 enum 을 설명 글로 바꿔 버린다 → 이 스키마는 API 요건을 이미 맞췄으니 그대로 보낸다.
+    // 파싱 실패는 예외 대신 null — 그래야 아래에서 거절(refusal)을 먼저 알아본다
+    const f = sdk.jsonSchemaOutputFormat(SKIN_SCHEMA, { transform: false });
+    format = { ...f, parse: s => { try { return JSON.parse(s); } catch { return null; } } };
+  } catch { throw new Error('AI 모듈을 불러오지 못했어요. 인터넷 연결을 확인하고 새로고침해 주세요.'); }
+  // 키는 이 기기에서 Anthropic 으로만 간다. 재시도하면 요금이 두 번 나갈 수 있어 한 번만 보낸다
+  const client = new A({ apiKey, dangerouslyAllowBrowser: true, timeout: 60e3, maxRetries: 0 });
+  let res;
+  try {
+    res = await client.beta.messages.parse({
+      model: 'claude-opus-5-5', max_tokens: 16000,
+      betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default',    // 안전 분류기가 거절하면 서버가 맞는 모델로 다시 시도
+      output_config: { effort: 'low', format },
+      system: SKIN_PROMPT,
+      messages: [{ role: 'user', content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: photo.slice(photo.indexOf(',') + 1) } },
+        { type: 'text', text: '이 사진의 피부 상태를 기록해 주세요.' },
+      ] }],
+    });
+  } catch (e) {
+    throw new Error(e instanceof A.AuthenticationError ? 'API 키가 맞지 않아요. ⋯ 메뉴에서 다시 등록해 주세요.'
+      : e instanceof A.RateLimitError ? '요청이 몰렸어요. 잠시 뒤 다시 해 주세요.'
+      : e instanceof A.APIConnectionTimeoutError ? '응답이 늦어요. 잠시 뒤 다시 해 주세요.'
+      : e instanceof A.APIConnectionError ? '인터넷 연결을 확인해 주세요.'
+      : e instanceof A.APIError ? `분석 요청이 실패했어요 (${e.status ?? '?'}): ${String(e.error?.error?.message ?? e.message).slice(0, 160)}`
+      : e instanceof SyntaxError ? '이 브라우저에서는 AI 분석을 쓸 수 없어요. iOS 16.4 이상으로 업데이트해 주세요.'
+      : '분석 결과를 읽지 못했어요.');
+  }
+  if (res.stop_reason === 'refusal') throw new Error('AI가 이 사진은 분석하지 않았어요.');
+  if (!res.parsed_output) throw new Error('분석 결과를 읽지 못했어요. 다시 해 주세요.');
+  return cleanAnalysis(res.parsed_output);
+}
+// 결과는 AI가 체크했던 상태만 바꾸고(내가 고른 건 그대로) 메모의 'AI:' 줄을 바꾼다 — 저장 전에 고칠 수 있다
+async function runAnalysis(form) {
+  const out = form.querySelector('.ai'), btn = form.querySelector('[data-act=analyze]'), save = form.querySelector('.primary');
+  const seq = form._aiSeq = (form._aiSeq || 0) + 1;      // 사진을 바꾸거나 다시 누르면 앞선 분석 결과는 버린다
+  const live = () => seq === form._aiSeq && form.isConnected && dlg.open;      // 창을 닫았거나 바뀌었으면 결과도 버린다
+  btn.disabled = save.disabled = true;                    // 끝나기 전에 저장하면 결과는 버려지고 요금만 나간다
+  out.hidden = false;
+  try {
+    const photo = form._draft?.photo ?? form.querySelector('.preview').getAttribute('src');
+    const key = await getKey();
+    if (!live()) return;
+    if (key === null) return void (out.textContent = '저장소를 읽지 못했어요. 다시 해 주세요.');
+    if (!key) return void (out.textContent = '⋯ 메뉴에서 Anthropic API 키를 등록하면 AI가 사진을 보고 상태를 채워 줘요.');
+    if (!isPhoto(photo)) return void (out.textContent = '사진을 먼저 골라 주세요.');
+    out.textContent = 'AI가 사진을 보는 중이에요… (보통 10~20초)';
+    const r = await analyzeSkin(photo, key);
+    if (!live()) return;
+    if (r.ok) {
+      for (const c of form.elements.tags) if (form._aiTags?.includes(c.value) || r.tags.includes(c.value)) c.checked = r.tags.includes(c.value);
+      form._aiTags = r.tags;
+      const memo = form.elements.memo, base = memo.value.split('\n').filter(s => !s.startsWith('AI: ')).join('\n').trimEnd();
+      const room = 500 - (base ? base.length + 1 : 0);      // 메모는 500자까지라 AI 줄을 남은 자리에 맞춘다
+      if (r.summary && room > 10) memo.value = (base ? base + '\n' : '') + ('AI: ' + r.summary).slice(0, room);
+    }
+    out.textContent = r.ok ? `AI: ${r.summary} 체크한 상태는 저장 전에 고칠 수 있어요.` : `AI: ${r.summary || '피부가 잘 보이는 사진으로 다시 골라 주세요.'}`;
+  } catch (e) { if (live()) out.textContent = e.message; }
+  finally { if (seq === form._aiSeq) btn.disabled = save.disabled = false; }
+}
+
 /* ───────── 동작 ───────── */
 const ACT = {
   tab(d) { tab = d.tab; editing = false; render(); scrollTo(0, 0); },
@@ -544,6 +640,18 @@ const ACT = {
   backup() { backupForm(); },
   export() { exportAll().catch(() => toast('백업 파일을 만들지 못했어요', true)); },
   close() { dlg.close(); },
+  analyze() { runAnalysis(dlg.querySelector('form')); },
+  async saveKey() {
+    const v = dlg.querySelector('[name=apiKey]').value.trim();
+    if (!/^sk-ant-\S+$/.test(v)) return toast('Anthropic API 키는 sk-ant- 로 시작해요', true);
+    try { await idb.set('apiKey', v); } catch (e) { return fail(e); }
+    toast('API 키를 저장했어요'); backupForm();
+  },
+  async delKey() {
+    if (!confirm('이 기기에 저장된 API 키를 지울까요?')) return;
+    try { await idb.del('apiKey'); } catch (e) { return fail(e); }
+    backupForm();
+  },
 };
 document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (state && b && Object.hasOwn(ACT, b.dataset.act)) ACT[b.dataset.act](b.dataset); });
 view.addEventListener('change', e => {        // 루틴에 제품 추가
@@ -569,9 +677,11 @@ dlg.addEventListener('change', async e => {   // 사진·백업 파일 고르기
     const form = t.form, ok = form.querySelector('.primary'), img = form.querySelector('.preview');
     ok.disabled = true;                       // 줄이는 동안 저장되면 사진이 빠진다
     // 고른 사진은 그 입력 창(form)에 붙인다 — 줄이는 사이 창을 닫고 다른 기록을 열어도 그쪽에 섞이지 않게
-    try { form._draft = { photo: await shrink(file, 1280, .82), thumb: await shrink(file, 320, .6) }; img.src = form._draft.photo; img.hidden = false; }
+    let picked = false;
+    try { form._draft = { photo: await shrink(file, 1280, .82), thumb: await shrink(file, 320, .6) }; img.src = form._draft.photo; img.hidden = false; picked = true; }
     catch { toast('사진을 읽을 수 없어요', true); }
     ok.disabled = false;
+    if (picked && form.isConnected && dlg.open) { form.querySelector('[data-act=analyze]').hidden = false; runAnalysis(form); }   // 사진을 고르면 바로 분석
   }
   t.value = '';
 });
@@ -592,8 +702,9 @@ dlg.addEventListener('submit', async e => {
     f.inert = true;
     try { if (f._draft) await idb.set('photo:' + l.id, f._draft.photo); } catch (err) { f.inert = false; return fail(err); }
     old ? Object.assign(old, l) : state.logs.push(l);
-  } else return dlg.close();
-  if (f.isConnected) dlg.close();             // 저장을 기다리는 사이 다른 창을 열었으면 그 창은 두고
+  } else if (e.submitter?.name === 'saveKey') return ACT.saveKey();      // 「키 저장」 또는 키 칸에서 Enter
+  else return dlg.close();
+  if (f.isConnected) dlg.close();            // 저장을 기다리는 사이 다른 창을 열었으면 그 창은 두고
   commit();
 });
 
@@ -648,6 +759,9 @@ function selfTest() {
     isCalm([{ date: '2026-11-14', tags: ['예민'] }, { date: '2027-11-15', tags: ['좋음'] }], '2026-11-16'), isCalm([{ date: '2027-01-01', tags: ['예민'] }], '2026-11-16')],
     [true, false, false, false, true, false], '예민 판정은 최근 7일·가장 최근 기록·앞날짜 무시');
   eq(cleanProduct({ name: 'B', cat: ['serum'] }).cat, 'etc', '종류 값이 배열이면 버림');
+  eq([cleanAnalysis({ ok: true, tags: ['좋음', '건조', '<b>', '건조'], summary: '  볼이 건조해요 ' }), cleanAnalysis({ ok: false, tags: ['트러블'], summary: '너무 어두워요' }), cleanAnalysis(null)],
+    [{ ok: true, tags: ['건조'], summary: '볼이 건조해요' }, { ok: false, tags: [], summary: '너무 어두워요' }, { ok: false, tags: [], summary: '' }], 'AI 결과 정리');
+  eq(cleanAnalysis({ ok: true, tags: [], summary: '볼이 붉어요.\n\n피부과 상담을 권해요.' }).summary, '볼이 붉어요. 피부과 상담을 권해요.', 'AI 요약은 한 줄로');
 
   const cs = cleanState({ products: [{ id: 'a', name: ' A ', cat: 'constructor', pao: 5, actives: ['x', 'vitc'], inUse: 1 }, { id: 'a', name: '중복' }, { name: '  ' }, 7],
     routine: { manual: 1, days: [{ am: ['a', 'a', 'ghost'], pm: 'x' }] }, logs: [{ id: 'l', date: 'nope', thumb: 'javascript:alert(1)', tags: ['예민', '<b>'] }] });
