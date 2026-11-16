@@ -264,6 +264,8 @@ function gaps(products, now) {
   if ((has('sun') || has('makeup')) && !has('oil')) out.push('선크림이나 메이크업을 한 날 저녁엔 클렌징오일·밤 같은 1차 세안제로 먼저 지우면 좋아요. 가지고 있다면 등록해 두세요.');
   return out;
 }
+// 기한 하나씩 채우기 순서: 기한(적힌 날짜·개봉 후 기간)을 아직 모르는 제품 — 루틴에 쓰는 개봉 제품 먼저, 이름 순
+const fillOrder = products => products.filter(p => !expiryOf(p)).sort((a, b) => b.opened - a.opened || a.name.localeCompare(b.name, 'ko')).map(p => p.id);
 const backupDue = (s, now) => !!(s.products.length || s.logs.length) && (!s.backupAt || daysBetween(s.backupAt, now) >= BACKUP_EVERY);
 // 개봉했는데 이번 주 루틴에 한 번도 없는 제품. 루틴 제외 종류·기한 지남·예민한 주에 쉬는 성분은 원래 빠지거나 따로 안내하니 뺀다
 // → 자동 루틴이면 같은 종류가 자리 수(매일 7·팩 2)보다, 또는 레티놀·각질 성분 제품이 저녁 자리(레티놀 3·각질 2)보다 많아 밀린 것, 직접 고친 루틴이면 넣지 않은 것
@@ -385,6 +387,7 @@ const view = $('#view'), dlg = $('#dlg');
 const esc = s => String(s).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 let state, tab = 'routine', dayIdx = todayIdx(), shownDay = today(), editing = false, filter = 'all', focusId = '', toastTimer, noSave = false;
 let queue = [];                               // 사진 한 장에서 읽은 화장품 중 아직 등록 창을 안 띄운 것
+let fill = null;                              // 기한 하나씩 채우기: { ids: 채울 제품 순서, i: 지금 몇 번째, done: 기한이 생긴 수 }
 const BACKUP_MAX = 300 * 2 ** 20;             // ponytail: 폰 메모리로 한 번에 읽을 수 있는 백업 크기. 사진이 아주 많이 쌓이면 백업을 나눠야 한다
 
 const product = id => state.products.find(p => p.id === id);
@@ -493,7 +496,9 @@ function viewProducts() {
         : `<span class="tag ${r === 'in' ? 'on' : r === 'out' ? 'warn' : ''}">${{ in: '루틴 포함', out: '루틴에 없음', skip: '루틴 제외' }[r]}</span>`}</article>`).join('');
   return `<div class="adds"><button id="add" class="primary" data-act="add">＋ 직접 등록</button>
     <label class="btn"><input type="file" accept="image/*" class="sr" data-pick="product">📷 사진으로 등록</label></div>` + (state.products.length
-    ? `<div class="filters" role="group" aria-label="걸러 보기">${chips}</div>${cards || '<p class="empty">해당하는 화장품이 없어요</p>'}`
+    ? `<div class="filters" role="group" aria-label="걸러 보기">${chips}</div>`
+      + ((n => n && (filter === 'all' || filter === 'none') ? `<button id="fill" class="wide" data-act="fillNext">📷 기한 없는 ${n}개 하나씩 채우기</button>` : '')(rows.filter(r => !r.e).length))
+      + (cards || '<p class="empty">해당하는 화장품이 없어요</p>')
     : '<div class="empty"><p><b>등록된 화장품이 없어요</b></p><p>사진으로 등록하면 AI가 이름·종류·기한을 읽어 줘요. 한 장에 여러 개를 찍어도 돼요. 뒷면(전성분·사용기한)이 보이게 찍으면 성분까지 채워요.<br>직접 등록할 땐 이름만 적어도 종류를 골라 줘요.</p></div>');
 }
 
@@ -511,9 +516,9 @@ function viewSkin() {
 /* ───────── 입력 창 ───────── */
 function productForm(p, fresh) {              // fresh = 사진에서 읽어 미리 채운 새 화장품
   const blank = !p, isNew = blank || !!fresh; p ??= cleanProduct({});
-  const more = isNew && queue.length;
+  const more = isNew && queue.length, filling = !isNew && fill && p.id === fill.ids[fill.i];
   modal(`<form method="dialog" data-form="product" data-id="${isNew ? '' : esc(p.id)}" ${blank ? 'data-auto="1"' : ''}>
-    <h2>${isNew ? '화장품 등록' : '화장품 수정'}${more ? ` <small>· 사진에서 ${queue.length}개 더</small>` : ''}</h2>
+    <h2>${isNew ? '화장품 등록' : '화장품 수정'}${more ? ` <small>· 사진에서 ${queue.length}개 더</small>` : ''}${filling ? ` <small>· 기한 채우기 ${fill.i + 1}/${fill.ids.length}</small>` : ''}</h2>
     ${isNew ? '' : (e => `<p class="muted">${badge(left(p, today()))} ${e ? `${e}까지${e === openLimit(p) ? ` (개봉 후 ${p.pao}개월)` : ''}` : '용기의 유통기한이나 개봉 후 사용기간을 넣으면 남은 날을 알려 줘요'}</p>`)(expiryOf(p))}
     <label class="btn"><input type="file" accept="image/*" class="sr" data-pick="product">📷 ${isNew ? '사진으로 채우기 (AI)' : '뒷면 사진으로 기한·성분 채우기 (AI)'}</label>
     <p class="ai" role="status" hidden></p>
@@ -535,8 +540,16 @@ function productForm(p, fresh) {              // fresh = 사진에서 읽어 미
     </div>
     <label>메모 <textarea name="memo" rows="2" maxlength="300">${esc(p.memo)}</textarea></label>
     ${!isNew && p.opened ? `<button type="button" data-act="finish" data-id="${esc(p.id)}">✓ 다 썼어요 · 대신 쓸 것 찾기</button>` : ''}
-    <div class="actions">${isNew ? (more ? '<button type="button" data-act="skip">건너뛰기</button>' : '') : `<button type="button" class="danger" data-act="delProduct" data-id="${esc(p.id)}">삭제</button>`}<span class="grow"></span>
-      <button type="button" data-act="close">취소</button><button class="primary">저장</button></div></form>`);
+    <div class="actions">${isNew ? (more ? '<button type="button" data-act="skip">건너뛰기</button>' : '') : filling ? '<button type="button" data-act="fillSkip">건너뛰기</button>'
+      : `<button type="button" class="danger" data-act="delProduct" data-id="${esc(p.id)}">삭제</button>`}<span class="grow"></span>
+      <button type="button" data-act="${filling ? 'fillStop' : 'close'}">${filling ? '그만' : '취소'}</button><button class="primary">저장</button></div></form>`);
+}
+function fillGo(step) {                       // 기한 채우기: 다음 제품 창을 연다 (그사이 지운 제품은 건너뛴다)
+  fill.i += step;
+  while (fill.i < fill.ids.length && !product(fill.ids[fill.i])) fill.i++;
+  if (fill.i < fill.ids.length) return productForm(product(fill.ids[fill.i]));
+  const done = fill.done; fill = null; dlg.close();
+  toast(done ? `기한 채우기를 마쳤어요. ${done}개에 기한이 생겼어요` : '기한 채우기를 마쳤어요');
 }
 async function checkForm() {                  // AI 루틴 점검 결과 창 (「다시 점검」도 여기로)
   modal(`<form method="dialog">
@@ -913,9 +926,12 @@ const ACT = {
   },
   drop(d) { state.routine.days[dayIdx][d.t].splice(+d.i, 1); manual(); },
   filter(d) { filter = d.f; render(); },
-  add() { queue = []; productForm(); },
+  add() { queue = []; fill = null; productForm(); },
   skip() { queue.length ? productForm(queue.shift(), true) : dlg.close(); },
-  editProduct(d) { productForm(product(d.id)); },
+  editProduct(d) { fill = null; productForm(product(d.id)); },
+  fillNext() { fill = { ids: fillOrder(state.products), i: 0, done: 0 }; fillGo(0); },
+  fillSkip() { if (fill) fillGo(1); },
+  fillStop() { fill = null; dlg.close(); },
   open(d) {                                   // 미개봉 → 오늘 개봉 (개봉하면 루틴에 들어간다). 개봉일이 실수로 찍히지 않게 한 번 묻는다
     const p = product(d.id); if (!p || p.opened) return;
     if (!confirm(`‘${p.name}’을(를) 오늘 개봉한 것으로 기록할까요?\n개봉하면 루틴에 들어가요.`)) return;
@@ -1016,6 +1032,10 @@ dlg.addEventListener('submit', async e => {
     const i = state.products.findIndex(x => x.id === p.id);
     i < 0 ? state.products.push(p) : (state.products[i] = p);
     if (!f.dataset.id && queue.length) { productForm(queue.shift(), true); toast(`‘${p.name}’ 저장했어요`); return void commit(); }      // 사진에서 읽은 다음 제품
+    if (fill && f.dataset.id && f.dataset.id === fill.ids[fill.i]) {      // 기한 채우기 중이면 저장하고 다음 제품으로
+      if (expiryOf(p)) fill.done++;
+      commit(); toast(`‘${p.name}’ 저장했어요${expiryOf(p) ? ` · ${expiryOf(p)}까지` : ''}`); return fillGo(1);
+    }
   } else if (f.dataset.form === 'log') {
     if (f.inert) return;                      // 사진을 저장하는 사이 한 번 더 눌러도 기록이 둘 생기지 않게
     const old = state.logs.find(l => l.id === f.dataset.id);
@@ -1108,6 +1128,8 @@ function selfTest() {
   const pd = generate([P({ id: 'a', cat: 'serum', pair: 'r' }), P({ id: 'r', cat: 'serum', actives: ['retinol'] }), P({ id: 'm', cat: 'mask', actives: ['retinol'] })], false, '2026-11-16');
   ok(pd.every(d => !d.am.includes('r') && d.pm.filter(i => i === 'r' || i === 'm').length <= 1), '레티놀 제품을 묶어도 아침·한 저녁에 둘은 안 붙는다');
   eq(cleanState({ products: [{ id: 'x', name: 'X', pair: 'x' }, { id: 'y', name: 'Y', pair: 'gone' }, { id: 'z', name: 'Z', pair: 'x' }] }).products.map(p => p.pair), ['', '', 'x'], '함께 바를 제품: 자기 자신·없는 제품은 지운다');
+  eq(fillOrder([P({ id: 'a', name: '나' }), P({ id: 'b', name: '가', expiry: '2027-01-01' }), { ...P({ id: 'c', name: '다' }), opened: false, openedAt: '' }, P({ id: 'd', name: '가나', pao: 12, openedAt: '2026-01-01' }), P({ id: 'e', name: '라' })]),
+    ['a', 'e', 'c'], '기한 하나씩 채우기 순서: 기한 모르는 것만, 개봉한 것 먼저·이름 순');
   const ac = generate([P({ id: 'pad', cat: 'toner', actives: ['acid'] }), P({ id: 'plain', cat: 'toner' }), P({ id: 'am', cat: 'mask', actives: ['acid'] })], false, '2026-11-16');
   eq([ac[1].pm, ac[5].pm, ac.every(d => d.pm.filter(i => i === 'pad' || i === 'am').length <= 1)], [['pad'], ['plain', 'am'], true], '각질 성분은 한 저녁에 하나만: 화 패드, 토 마스크');
   const gp = ps => gaps(ps, '2026-11-16').map(s => (s.includes('1차') ? 'oil' : 'sun'));
