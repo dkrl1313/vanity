@@ -137,6 +137,8 @@ form > label.pill, label.pill { display: inline-flex; align-items: center; gap: 
 label.pill:has(:checked) { background: var(--soft); border-color: transparent; color: var(--accent); font-weight: 700; }
 .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px 10px; }
 form:has([name=opened]:not(:checked)) .if-opened { display: none; }
+.ago { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: -4px; }
+.ago small { color: var(--muted); margin-right: 2px; }
 .actions { display: flex; gap: 8px; align-items: center; }
 .grow { flex: 1; }
 form > label.btn, .btn { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 10px; font-size: 15px; color: var(--ink); cursor: pointer; }
@@ -179,6 +181,9 @@ const CATS = {
 const ORDER = Object.keys(CATS);
 const ACTIVES = { retinol: '레티놀', acid: 'AHA·BHA·효소', vitc: '비타민C' };      // acid = 각질을 녹이는 것 (산·효소 세안제)
 const PAOS = [3, 6, 12, 18, 24, 36];          // 개봉 후 사용기간(개월) 선택지
+// 개봉일 빠르게 고르기: [이름, 며칠 전, 몇 달 전] — 정확한 날을 몰라도 추정 기한이 대략 맞게
+const AGO = [['오늘', 0, 0], ['1주 전', 7, 0], ['1달 전', 0, 1], ['3달 전', 0, 3], ['6달 전', 0, 6], ['1년 전', 0, 12]];
+const agoDate = (now, d, m) => addMonths(addDays(now, -d), -m);
 const DAYS = ['월', '화', '수', '목', '금', '토', '일'];
 const SLOTS = { am: '아침', pm: '저녁' };
 const TAGS = ['좋음', '건조', '유분', '트러블', '홍조', '예민'];
@@ -681,6 +686,8 @@ function productForm(p, fresh) {              // fresh = 사진에서 읽어 미
       <label>개봉일 <input type="date" name="openedAt" value="${p.openedAt}"></label>
       <label>개봉 후 사용기간 <select name="pao"><option value="0">모름</option>${PAOS.map(m => `<option value="${m}" ${m === p.pao ? 'selected' : ''}>${m}개월</option>`).join('')}</select></label>
     </div>
+    <div class="if-opened ago" role="group" aria-label="개봉일 빠르게 고르기"><small>언제쯤 뜯었어요?</small>${AGO.map(([n, d, m]) =>
+      `<button type="button" class="chip" data-act="ago" data-d="${d}" data-m="${m}">${n}</button>`).join('')}</div>
     <label>메모 <textarea name="memo" rows="2" maxlength="300">${esc(p.memo)}</textarea></label>
     ${!isNew && p.opened ? `<button type="button" data-act="finish" data-id="${esc(p.id)}">✓ 다 썼어요 · 대신 쓸 것 찾기</button>` : ''}
     <div class="actions">${isNew ? (more ? '<button type="button" data-act="skip">건너뛰기</button>' : '') : filling ? '<button type="button" data-act="fillSkip">건너뛰기</button>'
@@ -1104,6 +1111,7 @@ const ACT = {
     commit();
   },
   filter(d) { filter = d.f; render(); },
+  ago(d) { const el = dlg.querySelector('[name=openedAt]'); if (el) el.value = agoDate(today(), +d.d, +d.m); },      // 저장을 눌러야 반영
   add() { queue = []; fill = null; rebuyFor = null; productForm(); },
   again(d) { const x = state.done.find(x => x.id === d.id); if (x) { x.again = !x.again; commit(); } },
   rebuy(d) {                                  // 다시 샀어요 → 그 제품 정보로 채운 새 등록 창 (미개봉으로)
@@ -1377,6 +1385,8 @@ function selfTest() {
   const so = [P({ id: 'b', name: '나', cat: 'cream', expiry: '2027-01-01' }), P({ id: 'a', name: '가', cat: 'toner' }), P({ id: 'c', name: '다', cat: 'cream', expiry: '2026-12-01' })]
     .map((p, i) => ({ p, i, e: expiryOf(p) }));
   eq(Object.keys(SORTS).map(k => sortRows(so, k).map(r => r.p.id).join('')), ['cba', 'acb', 'abc', 'cab'], '화장품 정렬: 기한(없는 건 뒤)·종류(바르는 순서)·이름·최근 등록');
+  eq([...AGO.map(([, d, m]) => agoDate('2026-11-17', d, m)), agoDate('2026-03-31', 0, 1)],
+    ['2026-11-17', '2026-11-10', '2026-10-17', '2026-08-17', '2026-05-17', '2025-11-17', '2026-02-28'], '개봉일 빠르게 고르기: 오늘·1주·1달·3달·6달·1년 전 (말일은 그 달 말일로)');
   const ge = o => cleanProduct({ name: "g", opened: true, openedAt: "2026-01-31", ...o });
   eq([expiryOf(ge({ cat: 'toner' })), expiryOf(ge({ cat: 'eye' })), expiryOf(ge({ cat: 'serum', actives: ['vitc'] })), expiryOf(ge({ cat: 'etc' })), expiryOf(ge({ cat: 'toner', pao: 3 })),
     expiryOf(ge({ cat: 'toner', expiry: '2026-05-01' })), expiryOf({ ...ge({ cat: 'toner' }), opened: false, openedAt: '' }), knownExpiry(ge({ cat: 'toner' })), fillOrder([ge({ id: 'a', cat: 'toner' })])],
