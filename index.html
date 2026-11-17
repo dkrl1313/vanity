@@ -555,6 +555,7 @@ function render() {
 // 화장품 찾기: 이름·종류·성분에 글자가 들어 있는 카드만 남긴다 (띄어쓰기·대소문자 무시)
 // 다시 그리지 않고 숨기기만 한다 — 한글을 치는 중에 입력 칸이 바뀌면 글자 조합이 끊긴다
 const norm = s => s.toLowerCase().replace(/\s+/g, '');
+const sameName = (products, p) => products.find(q => q.id !== p.id && norm(q.name) === norm(p.name));      // 같은 이름(띄어쓰기·대소문자 무시)으로 이미 있는 다른 제품
 function applySearch() {
   const q = norm(query), cards = view.querySelectorAll('[data-q]'), none = view.querySelector('#noHit');
   let n = 0;
@@ -732,7 +733,7 @@ function productForm(p, fresh) {              // fresh = 사진에서 읽어 미
     <label>유통기한 (용기에 적힌 날짜) <input type="date" name="expiry" value="${p.expiry}"></label>
     <label class="pill"><input type="checkbox" name="opened" ${p.opened ? 'checked' : ''}> 개봉함 (루틴에 들어가요)</label>
     <div class="two if-opened">
-      <label>개봉일 <input type="date" name="openedAt" value="${p.openedAt}"></label>
+      <label>개봉일 <input type="date" name="openedAt" value="${p.openedAt}" max="${today()}"></label>
       <label>개봉 후 사용기간 <select name="pao"><option value="0">모름</option>${PAOS.map(m => `<option value="${m}" ${m === p.pao ? 'selected' : ''}>${m}개월</option>`).join('')}</select></label>
     </div>
     <div class="if-opened ago" role="group" aria-label="개봉일 빠르게 고르기"><small>언제쯤 뜯었어요?</small>${AGO.map(([n, d, m]) =>
@@ -1283,7 +1284,10 @@ dlg.addEventListener('input', e => {          // 화장품 폼: 이름으로 종
   if (t.name === 'name' && f.dataset.auto) { const g = guess(t.value); el.cat.value = g.cat; for (const c of el.actives) c.checked = g.actives.includes(c.value); }
   if (t.name === 'cat' || t.name === 'actives') delete f.dataset.auto;        // 직접 고른 뒤에는 추측하지 않는다
   if (t.name === 'opened' && el.opened.checked && !el.openedAt.value) el.openedAt.value = today();
+  if (t.name === 'opened' && !el.opened.checked && el.openedAt.value > today()) el.openedAt.value = '';      // 숨겨진 칸에 미래 날짜가 남으면 저장이 말없이 막힌다
 });
+// 개봉일은 오늘까지만(max) — 유통기한을 개봉일 칸에 적는 실수가 있었다(11-17 백업: 2028년 개봉). 브라우저가 저장을 막을 때 이유를 우리말로도 알린다
+dlg.addEventListener('invalid', e => { if (e.target.name === 'openedAt') toast('개봉일이 오늘보다 뒤예요. 유통기한을 개봉일 칸에 적지 않았는지 확인해 주세요.', true); }, true);
 dlg.addEventListener('change', async e => {   // 사진·백업 파일 고르기 · 피부 타입
   const t = e.target, file = t.files?.[0];
   if (t.name === 'skinType' || t.name === 'sensitive') {
@@ -1313,6 +1317,8 @@ dlg.addEventListener('submit', async e => {
     const p = readProduct(f);
     if (!p.name) return;
     const i = state.products.findIndex(x => x.id === p.id);
+    const dup = i < 0 ? sameName(state.products, p) : null;      // 새로 등록할 때만 묻는다 — 여분을 따로 등록하는 것일 수도 있으니 막지는 않는다
+    if (dup && !confirm(`‘${dup.name}’은(는) 이미 등록돼 있어요 (${dup.opened ? '개봉' : '미개봉'}).\n여분이라 따로 등록하는 거면 확인을 눌러 주세요.`)) return;
     const prevWhen = i < 0 ? '' : state.products[i].when;
     i < 0 ? state.products.push(p) : (state.products[i] = p);
     if (p.when !== prevWhen) dropClash(p);
@@ -1523,6 +1529,9 @@ function selfTest() {
     ['2027-01-31', '2026-07-31', '2026-07-31', '', '2026-04-30', '2026-05-01', '', '', ['a']], '추정 기한: 개봉일 + 종류별 보통 사용기간 (적힌 기한·사용기간이 우선, 기한 채우기 대상엔 그대로 남음)');
   eq(['라곰셀업', 'AHA', '레티놀', '크림'].map(q => norm('라곰 셀업 젤 투 워터 클렌저' + sub(P({ cat: 'cleanser', actives: ['acid'] }))).includes(norm(q))),
     [true, true, false, false], '화장품 찾기: 띄어쓰기·대소문자 무시, 이름·종류·성분에서');
+  const dp = [P({ id: 'a', name: '엘지 프라엘 앰플 세럼' }), P({ id: 'b', name: '토너 B' })];
+  eq([sameName(dp, P({ id: 'n', name: '엘지프라엘  앰플 세럼' }))?.id, sameName(dp, P({ id: 'n', name: '토너 b' }))?.id, sameName(dp, dp[0]), sameName(dp, P({ id: 'n', name: '토너' }))],
+    ['a', 'b', undefined, undefined], '같은 이름 찾기: 띄어쓰기·대소문자 무시, 자기 자신·이름 일부만 같은 것은 제외');
   const done = P({ id: 'done', cat: 'toner', actives: ['acid'] }), shelf = [done,
     { ...P({ id: 'sealed', cat: 'toner', expiry: '2027-01-01' }), opened: false, openedAt: '' },
     { ...P({ id: 'sealedAcid', cat: 'toner', actives: ['acid'], expiry: '2027-06-01' }), opened: false, openedAt: '' },
