@@ -129,7 +129,7 @@ form { display: grid; gap: 14px; }
 form > label, .two label { display: grid; gap: 5px; font-size: 13px; color: var(--muted); }
 fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 legend { padding: 0; font-size: 13px; color: var(--muted); }
-input:not([type=checkbox]), select, textarea { width: 100%; min-height: 44px; padding: 9px 12px; font-size: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); }
+input:not([type=checkbox], [type=radio]), select, textarea { width: 100%; min-height: 44px; padding: 9px 12px; font-size: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); }
 textarea { resize: vertical; }
 input[type=checkbox] { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
 .checks { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
@@ -189,12 +189,21 @@ const SLOTS = { am: '아침', pm: '저녁' };
 const TAGS = ['좋음', '건조', '유분', '트러블', '홍조', '예민'];
 // 레티놀·각질케어는 저녁에만, 서로 다른 날에. 목·일은 쉬는 날이라 팩을 둔다
 const NIGHTS = { retinol: [0, 2, 4], acid: [1, 5], pack: [3, 6] };
-// 계절(날짜로 자동)마다 자동 루틴을 하나씩 바꾼다. 예민한 주가 우선(레티놀·각질을 다 쉼), 직접 고친 루틴은 그대로
+// 자동 루틴을 조금씩 바꾸는 규칙: 계절(날짜로 자동)·피부 타입(⋯ 메뉴). 예민한 주가 우선(레티놀·각질을 다 쉼), 직접 고친 루틴은 그대로
+// nights = 그 성분을 쓰는 저녁을 줄인다(여러 규칙이면 겹치는 날만 = 덜 쓰는 쪽), amLight = 아침엔 로션까지만(크림·페이스오일은 저녁)
 const SEASONS = {
   change: { name: '환절기', nights: { retinol: [0, 4] }, note: '환절기라 레티놀을 주 2회(월·금)로 줄였어요.' },      // 피부가 쉽게 예민해지는 때
-  summer: { name: '여름', nights: {}, note: '여름이라 아침엔 로션까지만 바르고, 크림·페이스오일은 저녁에 써요.' },     // 아침 규칙은 generate 안에서
+  summer: { name: '여름', nights: {}, amLight: true, note: '여름이라 아침엔 로션까지만 바르고, 크림·페이스오일은 저녁에 써요.' },
   winter: { name: '겨울', nights: { acid: [5] }, note: '겨울이라 각질케어를 주 1회(토)로 줄였어요.' },                 // 건조한 때
 };
+const SKINS = {
+  dry: { name: '건성', nights: { acid: [5] }, note: '건성이라 각질케어를 주 1회(토)로 줄였어요.' },
+  normal: { name: '중성', nights: {} },
+  oily: { name: '지성', nights: {}, amLight: true, note: '지성이라 아침엔 로션까지만 바르고, 크림·페이스오일은 저녁에 써요.' },
+  combo: { name: '복합성', nights: {} },
+  dehyd: { name: '수부지', nights: {}, amLight: true, note: '수부지(수분 부족 지성)라 아침엔 로션까지만 바르고, 크림·페이스오일은 저녁에 써요.' },
+};
+const SENSITIVE = { name: '민감성', nights: { retinol: [0, 4] }, note: '민감성이라 레티놀을 주 2회(월·금)로 줄였어요.' };
 const SOON = 30;                              // 기한이 이 날수 안이면 '임박'
 const BACKUP_EVERY = 14;                      // 마지막 백업이 이 날수만큼 지나면 루틴 화면에서 알린다
 
@@ -238,7 +247,9 @@ const waiting = (p, products, now) => !nearEnd(p, now) && products.some(q => q !
 const vitcAm = p => !p.when && p.actives.includes('vitc') && p.cat !== 'cleanser' && CATS[p.cat][1] === 'both';      // 바르는 비타민C는 아침으로 (쓰는 때를 직접 고르면 그쪽)
 // 환절기 3~5·9~11월 · 여름 6~8월 · 겨울 12~2월
 const seasonOf = now => { const m = +now.slice(5, 7); return m >= 6 && m <= 8 ? 'summer' : m >= 3 && m <= 11 ? 'change' : 'winter'; };
-const nightsOf = season => ({ ...NIGHTS, ...SEASONS[season]?.nights });
+const nightsOf = rules => Object.fromEntries(Object.entries(NIGHTS).map(([g, ds]) => [g, ds.filter(d => rules.every(r => !r.nights[g] || r.nights[g].includes(d)))]));
+const skinName = s => [SKINS[s.skin?.type]?.name, s.skin?.sensitive && SENSITIVE.name].filter(Boolean).join(' · ');      // 「지성 · 민감성」 ('' = 고르지 않음)
+const rulesOf = (s, now) => [SKINS[s.skin?.type], s.skin?.sensitive && SENSITIVE, SEASONS[seasonOf(now)]].filter(Boolean);      // 지금 걸리는 규칙 (안내 순서: 고른 것 먼저)
 function fits(p, d, t, calm, nights) {        // 이 제품을 d요일 t(am/pm)에 써도 되는가
   const when = CATS[p.cat][1], g = group(p);
   if (!when) return false;
@@ -249,9 +260,9 @@ function fits(p, d, t, calm, nights) {        // 이 제품을 d요일 t(am/pm)�
   return when === 'both' || when === t;
 }
 // 개봉했고 기한 안 지난 제품으로 일주일 루틴을 짠다 (개봉 = 루틴 대상) → [{am: [id…], pm: [id…]} × 7]
-// calm = 피부가 예민한 주: 레티놀·각질케어를 뺀다. season = SEASONS 의 키 ('' 이면 계절 규칙 없이)
-function generate(products, calm, now, season = '') {
-  const nights = nightsOf(season);
+// calm = 피부가 예민한 주: 레티놀·각질케어를 뺀다. rules = 계절·피부 타입 규칙 (rulesOf, 없으면 기본 규칙만)
+function generate(products, calm, now, rules = []) {
+  const nights = nightsOf(rules), amLight = rules.some(r => r.amLight);
   const usable = products.filter(p => p.opened && !expired(p, now))
     .sort((a, b) => (expiryOf(a) || '9').localeCompare(expiryOf(b) || '9'));      // 기한 임박한 것부터
   const turn = {}, next = (key, pool) => pool[(turn[key] = (turn[key] ?? -1) + 1) % pool.length], byId = new Map(usable.map(p => [p.id, p]));
@@ -276,8 +287,8 @@ function generate(products, calm, now, season = '') {
       for (const cat of ORDER) {
         if (sleeping && cat === 'cream') continue;
         let fit = usable.filter(p => p.cat === cat && ok(p));
-        // 여름 아침엔 로션까지만 — 로션이 들어갔으면 크림·페이스오일은 저녁에. 아침만으로 직접 고른 것은 그대로
-        if (season === 'summer' && t === 'am' && (cat === 'cream' || cat === 'faceoil') && day[t].some(id => byId.get(id).cat === 'lotion'))
+        // 여름·지성·수부지 아침엔 로션까지만 — 로션이 들어갔으면 크림·페이스오일은 저녁에. 아침만으로 직접 고른 것은 그대로
+        if (amLight && t === 'am' && (cat === 'cream' || cat === 'faceoil') && day[t].some(id => byId.get(id).cat === 'lotion'))
           fit = fit.filter(p => p.when === 'am');
         // 레티놀·각질 날엔 각질 성분 없는 클렌저·클렌징오일로 — 자극이 겹치지 않게. 피부 보호 규칙이라 쓰는 때(아침만·저녁만)보다 우선, 순한 것이 없으면 그대로
         let swap = '';
@@ -439,6 +450,7 @@ function cleanState(s) {
     // 발랐어요 체크: { 'YYYY-MM-DD': { am: [id…], pm: [id…] } } — 없는 제품·빈 날은 버린다 (한 달 지난 날은 체크할 때 지움)
     ticks: Object.fromEntries(Object.entries(s.ticks && typeof s.ticks === 'object' ? s.ticks : {}).filter(([k]) => date(k))
       .map(([k, v]) => [k, { am: slot(v?.am), pm: slot(v?.pm) }]).filter(([, v]) => v.am.length || v.pm.length)),
+    skin: { type: Object.hasOwn(SKINS, s.skin?.type) ? s.skin.type : '', sensitive: !!s.skin?.sensitive },      // 내 피부 타입 ('' = 고르지 않음)
   };
 }
 
@@ -487,7 +499,7 @@ const save = () => {
 // 자동 루틴이면 다시 짠다. 직접 고친 루틴은 그대로 둔다 — 자동 때 순한 세안·먼저 바를 제품으로 들어간 자리도 사용자 것이 된다
 function arrange() {
   const now = today();
-  if (!state.routine.manual) state.routine.days = generate(state.products, isCalm(state.logs, now), now, seasonOf(now));
+  if (!state.routine.manual) state.routine.days = generate(state.products, isCalm(state.logs, now), now, rulesOf(state, now));
 }
 // 직접 고친 루틴에서 쓰는 때를 아침만·저녁만으로 바꾸면, 그 제품만 반대 시간 자리에서 뺀다
 const dropClash = p => { if (state.routine.manual) for (const day of state.routine.days) for (const t in SLOTS) if (clash(p, t)) day[t] = day[t].filter(id => id !== p.id); };
@@ -537,8 +549,17 @@ function viewRoutine() {
 
   const notes = [];
   if (!R.manual && isCalm(state.logs, now)) notes.push('최근 피부 기록이 ‘예민’이라 레티놀·각질케어는 쉬어 가요.');
-  // 계절 규칙으로 이번 주 루틴이 실제로 달라졌을 때만 알린다 (해당 제품이 없거나 예민한 주라 이미 쉬면 말하지 않음)
-  if (!R.manual && JSON.stringify(R.days) !== JSON.stringify(generate(state.products, calmNow, now))) notes.push(SEASONS[seasonOf(now)].note);
+  // 피부 타입 → 계절 순으로 규칙을 하나씩 더해, 그 규칙 때문에 이번 주 루틴이 실제로 더 달라질 때만 알린다
+  // (해당 제품이 없거나 예민한 주라 이미 쉬면 말하지 않고, 고른 피부 타입과 같은 효과인 계절 안내는 겹쳐 말하지 않음)
+  if (!R.manual) {
+    let used = [], prev = JSON.stringify(generate(state.products, calmNow, now));
+    for (const r of rulesOf(state, now)) {
+      used = [...used, r];
+      const cur = JSON.stringify(generate(state.products, calmNow, now, used));
+      if (r.note && cur !== prev) notes.push(r.note);
+      prev = cur;
+    }
+  }
   const gone = state.products.filter(p => p.opened && expired(p, now)).length;
   const guessGone = state.products.filter(p => p.opened && expired(p, now) && !knownExpiry(p)).length;
   if (gone) notes.push(`기한이 지난 개봉 제품이 ${gone}개 있어요.${R.manual ? '' : ' 루틴에서는 뺐어요.'}`
@@ -774,6 +795,11 @@ async function backupForm() {
   const key = await getKey();      // null = 저장소를 못 읽음 ('' = 키 없음)
   const kept = await (navigator.storage?.persisted?.() ?? Promise.resolve(null)).catch(() => null);      // 시작할 때 persist() 로 요청해 둔 보호가 됐나
   modal(`<form method="dialog">
+    <h2>내 피부</h2>
+    <p class="muted">고르면 자동 루틴과 AI 점검·사진 분석에 반영돼요.</p>
+    <div class="checks" role="radiogroup" aria-label="피부 타입">${[['', '모름'], ...Object.entries(SKINS).map(([k, v]) => [k, v.name])].map(([k, n]) =>
+      `<label class="pill"><input type="radio" name="skinType" value="${k}" ${k === state.skin.type ? 'checked' : ''}> ${n}</label>`).join('')}</div>
+    <label class="pill"><input type="checkbox" name="sensitive" ${state.skin.sensitive ? 'checked' : ''}> 민감성 (쉽게 붉어지거나 따가워요)</label>
     <h2>AI 사진 읽기 (Google Gemini 무료)</h2>
     <p class="muted">Google AI Studio(aistudio.google.com)에서 무료 API 키를 만들어 넣으면, 피부 사진은 상태 칸과 메모를, 화장품 사진은 이름·종류·기한을 Gemini가 채워 줘요. 결제 정보를 연결하지 않은 프로젝트의 키면 요금이 나가지 않아요.</p>
     <p class="note">무료 등급이라 구글에 보낸 사진과 받은 답을 구글이 제품 개선에 쓰고, 사람 검토자가 볼 수도 있어요. 구글은 무료 등급에 민감한 개인정보를 보내지 말라고 안내해요. 얼굴 전체보다 피부 부분만 가까이 찍기를 권해요.</p>
@@ -896,6 +922,7 @@ const CHECK_PROMPT = `화장품 루틴 앱이에요. 사용자의 실제 제품 
 - 종류 순서로 바르기: 클렌징오일 → 폼클렌저 → 각질케어 → 토너 → 마스크팩 → 에센스 → 세럼·앰플 → 아이크림 → 로션 → 크림 → 페이스오일 → 슬리핑팩 → 선크림(아침 마지막)
 - 레티놀은 월·수·금 저녁, 각질 성분(AHA·BHA·효소)은 화·토 저녁, 팩은 목·일 저녁에만. 한 저녁에 레티놀·각질 제품은 하나씩만
 - 계절 반영: 환절기(3~5·9~11월)엔 레티놀을 월·금 저녁만, 겨울(12~2월)엔 각질 성분을 토 저녁만, 여름(6~8월) 아침엔 로션이 있으면 크림·페이스오일을 빼고 저녁에만. 지금 계절은 [지금 계절]에 적어요
+- 피부 타입 반영: 지성·수부지는 아침에 로션이 있으면 크림·페이스오일을 빼고 저녁에만, 건성은 각질 성분을 토 저녁만, 민감성은 레티놀을 월·금 저녁만. 사용자가 고른 피부 타입은 [피부 타입]에 적어요 — 조언도 그 피부 타입에 맞춰요
 - 바르는 비타민C는 아침에. 레티놀·각질 제품을 쓰는 날엔 아침·저녁 모두 각질 성분(효소 세안제 포함) 없는 클렌저로 바꿔 넣음
 - 슬리핑팩을 쓰는 저녁엔 크림을 빼고 로션까지 바른 뒤 슬리핑팩으로 마무리
 - 같은 종류가 여러 개면 날마다 번갈아 씀. 단 기한이 30일 안 남은 제품이 있으면 그 자리(레티놀·각질 성분은 종류가 달라도 한 자리)는 그것을 매일 먼저 쓰고 나머지는 쉼
@@ -930,7 +957,7 @@ function cleanCheck(r) {                      // AI 답도 정해진 칸·길이
 function routineText(s, now) {
   const name = id => s.products.find(p => p.id === id)?.name ?? '';
   // 쓰는 때는 실제로 쓰이는 때로 적는다 — 「자동」이라고만 적으면 AI가 각질 패드를 아무 때나 쓰는 줄 알고 「저녁만으로 바꾸라」고 되풀이했다 (11-16 실측)
-  const n = nightsOf(seasonOf(now)), on = g => n[g].map(d => DAYS[d]).join('·');      // 계절에 맞춘 요일
+  const n = nightsOf(rulesOf(s, now)), on = g => n[g].map(d => DAYS[d]).join('·');      // 계절·피부 타입에 맞춘 요일
   const FIXED = { retinol: `레티놀 날 저녁(${on('retinol')}) 고정`, acid: `각질 날 저녁(${on('acid')}) 고정`, pack: `팩 날 저녁(${on('pack')}) 고정` };
   const when = p => FIXED[group(p)] ?? ({ '': '자동', am: '아침만', pm: '저녁만' }[p.when]
     + (p.cat === 'cleanser' && p.actives.includes('acid') ? ' (씻어 내는 제품이라 매일 써도 되고, 레티놀·각질 날엔 앱이 순한 클렌저로 바꿈)' : ''));
@@ -944,6 +971,7 @@ function routineText(s, now) {
     `[이번 주 루틴 — ${s.routine.manual ? '사용자가 직접 고친 루틴' : '앱이 자동으로 짠 루틴'}]`,
     ...s.routine.days.flatMap((d, i) => [`${DAYS[i]} 아침: ${d.am.map(name).join(' → ') || '없음'}`, `${DAYS[i]} 저녁: ${d.pm.map(name).join(' → ') || '없음'}`]),
     `[지금 계절] ${SEASONS[seasonOf(now)].name}`,
+    `[피부 타입] ${skinName(s) || '고르지 않음'}`,
     `[가장 최근 피부 상태] ${last ? `${last.date}: ${last.tags.join(', ') || '태그 없음'}` : '기록 없음'}`].join('\n');
 }
 function cleanItems(r) {                      // AI 가 읽은 화장품도 믿지 않고 정해진 값만 (개봉은 사용자가 고른다)
@@ -954,7 +982,8 @@ function cleanItems(r) {                      // AI 가 읽은 화장품도 믿�
   }).filter(p => p.name);
 }
 const jpeg = photo => ({ inlineData: { mimeType: 'image/jpeg', data: photo.slice(photo.indexOf(',') + 1) } });
-const analyzeSkin = async (photo, key) => cleanAnalysis(await askGemini([jpeg(photo), { text: '이 사진의 피부 상태를 기록해 주세요.' }], key, SKIN_PROMPT, SKIN_SCHEMA));
+const analyzeSkin = async (photo, key) => cleanAnalysis(await askGemini([jpeg(photo),
+  { text: `이 사진의 피부 상태를 기록해 주세요.${skinName(state) ? ` 사용자가 고른 피부 타입: ${skinName(state)} (참고만 하고, 사진에 보이는 것을 기록해요).` : ''}` }], key, SKIN_PROMPT, SKIN_SCHEMA));
 const readProducts = async (photo, key) => cleanItems(await askGemini([jpeg(photo), { text: '이 사진 속 화장품을 읽어 주세요.' }], key, PRODUCT_PROMPT, PRODUCT_SCHEMA));
 // 제안이 어느 제품인지는 목록 번호로 받는다 — 이름을 쓰게 하면 「시카 크림」처럼 줄여 써서 못 찾고,
 // 이름 중에서 고르게(enum) 하면 제품이 많을 때 Gemini 가 400(too many states)으로 거절한다 (11-17 실측)
@@ -1207,8 +1236,13 @@ dlg.addEventListener('input', e => {          // 화장품 폼: 이름으로 종
   if (t.name === 'cat' || t.name === 'actives') delete f.dataset.auto;        // 직접 고른 뒤에는 추측하지 않는다
   if (t.name === 'opened' && el.opened.checked && !el.openedAt.value) el.openedAt.value = today();
 });
-dlg.addEventListener('change', async e => {   // 사진·백업 파일 고르기
+dlg.addEventListener('change', async e => {   // 사진·백업 파일 고르기 · 피부 타입
   const t = e.target, file = t.files?.[0];
+  if (t.name === 'skinType' || t.name === 'sensitive') {
+    const el = t.form.elements;
+    state.skin = { type: el.skinType.value, sensitive: el.sensitive.checked }; commit();
+    return toast('피부 타입을 저장했어요 · 루틴에 반영했어요');
+  }
   if (!file) return;
   if (t.dataset.pick === 'backup') importFile(file);
   if (t.dataset.pick === 'product') fillFromPhoto(t.form, file);
@@ -1310,12 +1344,17 @@ function selfTest() {
   eq(w.map(d => +d.pm.includes('mk')), [0, 0, 0, 1, 0, 0, 1], '팩은 목·일 저녁');
   eq(['2026-02-28', '2026-03-01', '2026-05-31', '2026-06-01', '2026-08-31', '2026-09-01', '2026-11-30', '2026-12-01'].map(seasonOf),
     ['winter', 'change', 'change', 'summer', 'summer', 'change', 'change', 'winter'], '계절: 환절기 3~5·9~11월, 여름 6~8월, 겨울 12~2월');
-  const ch = generate(ps, false, '2026-11-16', 'change'), wi = generate(ps, false, '2026-12-14', 'winter');
+  const ch = generate(ps, false, '2026-11-16', [SEASONS.change]), wi = generate(ps, false, '2026-12-14', [SEASONS.winter]);
   eq([ch.map(d => +d.pm.includes('sr')), ch.map(d => +d.pm.includes('ex')), wi.map(d => +d.pm.includes('ex')), wi.map(d => +d.pm.includes('sr'))],
     [[1, 0, 0, 0, 1, 0, 0], [0, 1, 0, 0, 0, 1, 0], [0, 0, 0, 0, 0, 1, 0], [1, 0, 1, 0, 1, 0, 0]], '환절기엔 레티놀 월·금, 겨울엔 각질케어 토만 (나머지는 그대로)');
   const su = [P({ id: 'lo', cat: 'lotion' }), P({ id: 'cr', cat: 'cream' }), P({ id: 'fo', cat: 'faceoil', when: 'am' })];
-  eq([generate(su, false, '2026-07-13', 'summer')[0], generate([P({ id: 'cr', cat: 'cream' })], false, '2026-07-13', 'summer')[0].am, generate(su, false, '2026-07-13')[0].am],
+  eq([generate(su, false, '2026-07-13', [SEASONS.summer])[0], generate([P({ id: 'cr', cat: 'cream' })], false, '2026-07-13', [SEASONS.summer])[0].am, generate(su, false, '2026-07-13')[0].am],
     [{ am: ['lo', 'fo'], pm: ['lo', 'cr'] }, ['cr'], ['lo', 'cr', 'fo']], '여름 아침엔 로션까지만 — 아침만으로 고른 것·로션이 없을 때 크림은 그대로');
+  const sk = { skin: { type: 'oily', sensitive: true } };
+  eq([nightsOf([SEASONS.change, SEASONS.winter, SKINS.dry, SENSITIVE]), rulesOf(sk, '2026-07-01').map(r => r.name), rulesOf({}, '2026-12-01').map(r => r.name),
+    generate(su, false, '2026-11-16', [SKINS.oily])[0].am, cleanState({ skin: { type: 'bad', sensitive: 1 } }).skin, skinName(sk)],
+    [{ retinol: [0, 4], acid: [5], pack: [3, 6] }, ['지성', '민감성', '여름'], ['겨울'], ['lo', 'fo'], { type: '', sensitive: true }, '지성 · 민감성'],
+    '피부 타입: 계절과 함께 덜 쓰는 쪽으로, 지성은 아침 로션까지만, 모르는 값은 버림');
   ok(!['old', 'off', 'lip'].some(i => all.includes(i)), '만료·미개봉·메이크업은 제외');
   ok(all.includes('c1') && all.includes('c2') && w.every(d => [d.am, d.pm].every(s => s.filter(i => i[0] === 'c' && i[1] !== 'l').length === 1)), '같은 종류는 한 칸에 하나씩 돌려 씀');
   const calm = generate(ps, true, '2026-11-16').flatMap(d => d.pm);
@@ -1424,7 +1463,9 @@ function selfTest() {
   ok(rt.includes('- [1] 토너A | 토너·스킨 | 성분: AHA·BHA·효소 | 쓰는 때: 각질 날 저녁(화·토) 고정 | 메모: 부드럽게 닦기') && rt.includes('- [2] 크림B | 크림') && rt.includes('화 저녁: 토너A') && rt.includes('월 아침: 없음')
     && rt.at(-1) === '[가장 최근 피부 상태] 2026-11-15: 예민, 홍조', 'AI 루틴 점검에 보내는 글 (앞날짜 기록은 무시)');
   const rs = routineText({ products: [P({ name: '레티놀B', cat: 'serum', actives: ['retinol'] }), P({ name: '패드C', cat: 'toner', actives: ['acid'] })], logs: [], routine: { manual: false, days: DAYS.map(() => ({ am: [], pm: [] })) } }, '2026-12-14');
-  ok(rs.includes('레티놀B | 세럼·앰플 | 성분: 레티놀 | 쓰는 때: 레티놀 날 저녁(월·수·금) 고정') && rs.includes('쓰는 때: 각질 날 저녁(토) 고정') && rs.includes('[지금 계절] 겨울'), 'AI 점검 글에 계절과 계절에 맞춘 요일');
+  ok(rs.includes('레티놀B | 세럼·앰플 | 성분: 레티놀 | 쓰는 때: 레티놀 날 저녁(월·수·금) 고정') && rs.includes('쓰는 때: 각질 날 저녁(토) 고정') && rs.includes('[지금 계절] 겨울') && rs.includes('[피부 타입] 고르지 않음'), 'AI 점검 글에 계절과 계절에 맞춘 요일');
+  const rk = routineText({ products: [P({ name: '레티놀B', cat: 'serum', actives: ['retinol'] })], logs: [], skin: { type: 'dry', sensitive: true }, routine: { manual: false, days: DAYS.map(() => ({ am: [], pm: [] })) } }, '2026-07-13');
+  ok(rk.includes('쓰는 때: 레티놀 날 저녁(월·금) 고정') && rk.includes('[피부 타입] 건성 · 민감성'), 'AI 점검 글에 피부 타입과 그에 맞춘 요일');
   const G = (parts, finishReason = 'STOP') => ({ candidates: [{ content: { parts }, finishReason }] });
   eq(readGemini(G([{ text: '생각 중', thought: true }, { text: '{"ok":true,' }, { text: '"tags":["건조"],"summary":"s"}' }])), { ok: true, tags: ['건조'], summary: 's' }, 'Gemini 답: 생각 부분은 빼고 이어 붙여 읽기');
   const why = r => { try { readGemini(r); return 'ok'; } catch (e) { return /분석하지 않았/.test(e.message) ? 'blocked' : 'broken'; } };
@@ -1435,7 +1476,7 @@ function selfTest() {
     routine: { manual: 1, days: [{ am: ['a', 'a', 'ghost'], pm: 'x' }] }, logs: [{ id: 'l', date: 'nope', thumb: 'javascript:alert(1)', tags: ['예민', '<b>'] }] });
   eq(cs.products, [{ id: 'a', name: 'A', cat: 'etc', actives: ['vitc'], expiry: '', opened: true, openedAt: '', pao: 0, memo: '', when: '', pair: '' }], '가져온 화장품 정리 (옛 사용중 = 개봉)');
   eq([cs.routine.manual, cs.routine.days.length, cs.routine.days[0], cs.logs[0].thumb, cs.logs[0].tags, cs.logs[0].date === today()], [true, 7, { am: ['a'], pm: [] }, '', ['예민'], true], '가져온 루틴·기록 정리');
-  eq(cleanState(cleanState(undefined)), { products: [], logs: [], routine: { manual: false, days: DAYS.map(() => ({ am: [], pm: [] })) }, backupAt: '', done: [], ticks: {} }, '빈 상태');
+  eq(cleanState(cleanState(undefined)), { products: [], logs: [], routine: { manual: false, days: DAYS.map(() => ({ am: [], pm: [] })) }, backupAt: '', done: [], ticks: {}, skin: { type: '', sensitive: false } }, '빈 상태');
   eq(cleanState({ products: [{ id: 'a', name: 'A' }], ticks: { '2026-11-16': { am: ['a', 'a', 'ghost'], pm: 'x' }, '2026-02-30': { am: ['a'] }, '2026-11-15': { am: [] }, junk: 1 } }).ticks,
     { '2026-11-16': { am: ['a'], pm: [] } }, '발랐어요 체크 정리: 없는 날짜·없는 제품·빈 날은 버림');
   eq([addDays('2026-11-30', 1), addDays('2026-11-16', -1), dow('2026-11-16'), dow('2026-11-22')], ['2026-12-01', '2026-11-15', 0, 6], '날짜 더하기·요일 (월=0)');
