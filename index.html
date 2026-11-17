@@ -130,6 +130,8 @@ form { display: grid; gap: 14px; }
 form > label, .two label, .more label { display: grid; gap: 5px; font-size: 13px; color: var(--muted); }
 .more summary { padding: 11px 0; font-size: 14px; color: var(--muted); cursor: pointer; }
 .more > div { display: grid; gap: 14px; padding-top: 4px; }
+.restnote { color: var(--ink); }
+.restnote:empty { display: none; }
 fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 legend { padding: 0; font-size: 13px; color: var(--muted); }
 input:not([type=checkbox], [type=radio]), select, textarea { width: 100%; min-height: 44px; padding: 9px 12px; font-size: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); }
@@ -389,6 +391,21 @@ function alternatives(p, products, now) {
 function dropRest(days, products, p) {
   const gs = group(p) === 'daily' && REST[p.rest]?.[1], byId = new Map(products.map(q => [q.id, q]));
   if (gs) for (const day of days) if (day.pm.some(id => byId.has(id) && gs.includes(group(byId.get(id))))) day.pm = day.pm.filter(id => id !== p.id);
+}
+// 쉬는 저녁을 고른 제품이 이번 주 어느 저녁에 빠지고, 그 저녁 같은 종류 자리에 무엇이 들어가는지 한 줄로 — 대신 들어가는 제품도 쉬게 해야 하는지 바로 보이게
+// (11-17: 블루 드롭을 각질 저녁에 쉬게 하니 같은 EGF 세럼이 대신 들어갔다). p = 폼에 적힌 그대로(저장 전). 자동 루틴은 그 설정으로 다시 짜 보고, 직접 고친 루틴은 빠지기만 한다
+function restNote(s, p, now) {
+  const gs = group(p) === 'daily' && REST[p.rest]?.[1];
+  if (!gs || !p.opened || p.when === 'off' || !CATS[p.cat][1] || expired(p, now)) return '';
+  const products = s.products.some(q => q.id === p.id) ? s.products.map(q => (q.id === p.id ? p : q)) : [...s.products, p];      // 순서를 지켜야 저장한 뒤와 같은 루틴이 나온다
+  const byId = new Map(products.map(q => [q.id, q])), M = s.routine.manual;
+  const days = M ? s.routine.days : generate(products, isCalm(s.logs, now), now, rulesOf(s, now));
+  const hit = days.map((d, i) => [DAYS[i], d.pm.map(id => byId.get(id)).filter(Boolean)]).filter(([, ps]) => ps.some(q => gs.includes(group(q))));
+  if (!hit.length) return '이번 주엔 그 성분을 쓰는 저녁이 없어서 쉬는 날이 없어요';
+  const when = hit.map(([d]) => d).join('·');
+  if (M) return `직접 고친 루틴이라 ${when} 저녁에서 이 제품만 빠져요 (대신 넣지는 않아요)`;
+  const subs = hit.map(([d, ps]) => [d, ps.filter(q => q.cat === p.cat && q.id !== p.id).map(q => q.name).join(' + ') || '없음(비어요)']);
+  return `이번 주엔 ${when} 저녁에 쉬어요 · 그 자리엔 ${subs.every(([, n]) => n === subs[0][1]) ? subs[0][1] : subs.map(([d, n]) => `${d} ${n}`).join(', ')}`;
 }
 function isCalm(logs, now) {                  // 가장 최근 피부 기록이 7일 안이고 '예민'이면 (앞날짜로 잘못 적은 기록은 무시)
   const last = logs.filter(l => l.date <= now).reduce((m, l) => (!m || l.date >= m.date ? l : m), null);
@@ -750,7 +767,7 @@ function productForm(p, fresh) {              // fresh = 사진에서 읽어 미
     <label>메모 <textarea name="memo" rows="2" maxlength="300">${esc(p.memo)}</textarea></label>
     <details class="more" ${p.rest || p.pair ? 'open' : ''}><summary>자세한 설정 · 쉬는 저녁, 먼저 바를 제품</summary><div>
     <label>쉬는 저녁 — 고른 저녁엔 이 제품을 빼고 같은 종류 다른 제품을 넣어요 (예: 각질 마스크 날엔 꾸덕한 밤 빼기) <select name="rest"><option value="">없음</option>${Object.entries(REST).map(([v, [n]]) =>
-      `<option value="${v}" ${v === p.rest ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      `<option value="${v}" ${v === p.rest ? 'selected' : ''}>${n}</option>`).join('')}</select><small class="restnote" role="status">${esc(restNote(state, p, today()))}</small></label>
     <label>먼저 바를 제품 — 이 제품 바로 앞에 붙여 발라요 (예: 레티놀 아이크림 앞에 일반 아이크림) <select name="pair"><option value="">없음</option>${state.products.filter(q => q.id !== p.id)
       .sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat) || a.name.localeCompare(b.name, 'ko'))
       .map(q => `<option value="${esc(q.id)}" ${q.id === p.pair ? 'selected' : ''}>${esc(q.name)} (${CATS[q.cat][0]})</option>`).join('')}</select></label>
@@ -1256,7 +1273,8 @@ const ACT = {
   applyRest(d) {                              // AI 점검 제안 → 쉬는 저녁 고르기
     const p = product(d.id); if (!p || !Object.hasOwn(REST, d.rest)) return;
     p.rest = d.rest; if (state.routine.manual) dropRest(state.routine.days, state.products, p); commit();
-    applied(d, `✓ ${REST[d.rest][0]}엔 쉬게 했어요`); toast(`‘${p.name}’을(를) ${REST[d.rest][0]}엔 쉬게 했어요`);
+    const note = restNote(state, p, today());
+    applied(d, `✓ ${REST[d.rest][0]}엔 쉬게 했어요`); toast(note ? `‘${p.name}’ 쉬는 저녁을 골랐어요 · ${note}` : `‘${p.name}’을(를) ${REST[d.rest][0]}엔 쉬게 했어요`);
   },
   swap(d) {                                   // 다 쓴 제품을 목록·루틴에서 빼고, 고른 제품이 있으면 오늘 개봉 (직접 고친 루틴은 같은 자리에 바꿔 넣는다)
     const p = product(d.id), q = d.to ? product(d.to) : null; if (!p) return;
@@ -1317,6 +1335,7 @@ dlg.addEventListener('input', e => {          // 화장품 폼: 이름으로 종
   if (t.name === 'cat' || t.name === 'actives' || t.name === 'rest') delete f.dataset.auto;        // 직접 고른 뒤에는 추측하지 않는다
   if (t.name === 'opened' && el.opened.checked && !el.openedAt.value) el.openedAt.value = today();
   if (t.name === 'opened' && !el.opened.checked && el.openedAt.value > today()) el.openedAt.value = '';      // 숨겨진 칸에 미래 날짜가 남으면 저장이 말없이 막힌다
+  f.querySelector('.restnote').textContent = restNote(state, readProduct(f), today());      // 쉬는 저녁·종류·개봉을 바꾸면 대신 들어가는 제품 안내도 바로 (쉬는 저녁이 없으면 계산하지 않는다)
 });
 // 개봉일은 오늘까지만(max) — 유통기한을 개봉일 칸에 적는 실수가 있었다(11-17 백업: 2028년 개봉). 브라우저가 저장을 막을 때 이유를 우리말로도 알린다
 dlg.addEventListener('invalid', e => { if (e.target.name === 'openedAt') toast('개봉일이 오늘보다 뒤예요. 유통기한을 개봉일 칸에 적지 않았는지 확인해 주세요.', true); }, true);
@@ -1487,6 +1506,14 @@ function selfTest() {
     md.map(d => d.am.join() + '/' + d.pm.join()), enzLine(false).includes('순한 클렌저로 바꿈'), enzLine(true).includes('순한 클렌저로 바꿈'), enzLine(true).includes('매일 써도 됨')],
     [['mild', 'enz,pad', 'mild', 'enz', 'mild', 'enz,pad', 'mild'], 'mild2,pad', ['pom/pad', '/rs,pom', '/pom,gone'], true, false, true],
     '쉬는 저녁으로 고른 순한 클렌저는 각질 저녁에 대신 데려오지 않음(다른 순한 것이 있으면 그것) · 직접 고친 루틴에선 그 성분이 든 저녁에서만 뺌 · 직접 고친 루틴 글엔 「앱이 바꿈」을 적지 않음');
+  const rn = (products, over = {}) => restNote({ products, logs: [], routine: { manual: false, days: [] }, ...over }, products[0], '2026-11-16');
+  eq([rn([pom, P({ id: 'cr', name: '크림B', cat: 'cream' }), tpad]), rn([pom, tpad]), rn([pom, tpad], { logs: [{ date: '2026-11-16', tags: ['예민'] }] }),
+    rn([pom, tpad], { routine: { manual: true, days: DAYS.map((_, i) => ({ am: [], pm: i === 1 ? ['pad', 'pom'] : ['pom'] })) } }),
+    rn([{ ...pom, rest: '' }, tpad]), rn([{ ...pom, opened: false }, tpad]), rn([{ ...rsm, rest: 'acid' }, tpad]),
+    rn([P({ id: 's0', name: 'S0', cat: 'serum', rest: 'active' }), P({ id: 's1', name: 'S1', cat: 'serum' }), P({ id: 's2', name: 'S2', cat: 'serum' }), tpad, P({ id: 'rc', name: 'RC', cat: 'cream', actives: ['retinol'] })])],
+    ['이번 주엔 화·토 저녁에 쉬어요 · 그 자리엔 크림B', '이번 주엔 화·토 저녁에 쉬어요 · 그 자리엔 없음(비어요)', '이번 주엔 그 성분을 쓰는 저녁이 없어서 쉬는 날이 없어요',
+      '직접 고친 루틴이라 화 저녁에서 이 제품만 빠져요 (대신 넣지는 않아요)', '', '', '', '이번 주엔 월·화·금·토 저녁에 쉬어요 · 그 자리엔 월 S1, 화 S2, 금 S1, 토 S2'],
+    '쉬는 저녁 안내: 이번 주 쉬는 저녁과 그 자리에 대신 들어가는 제품 (없으면 비어요 · 예민한 주 · 직접 고친 루틴 · 해당 없는 제품은 빈 값 · 날마다 다르면 요일별로)');
   eq([lapsed({ manual: true, until: '2026-11-22' }, '2026-11-22'), lapsed({ manual: true, until: '2026-11-22' }, '2026-11-23'), lapsed({ manual: true, until: '' }, '2027-01-01'), lapsed({ manual: false, until: '2026-11-22' }, '2026-11-23'),
     cleanState({ routine: { manual: true, until: '2026-11-22' } }).routine.until, cleanState({ routine: { manual: false, until: '2026-11-22' } }).routine.until, cleanState({ routine: { manual: true, until: 'x' } }).routine.until],
     [false, true, false, false, '2026-11-22', '', ''], '직접 고친 루틴 「이번 주만」: 그 주 일요일이 지나면 자동으로 (계속 유지·자동 루틴은 해당 없음)');
