@@ -105,6 +105,9 @@ button.what { border: 0; background: none; padding: 2px 0; min-height: 0; border
 .tick[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .steps li:has(.tick[aria-pressed=true]) .what { opacity: .5; }
 .week { margin: 0 0 10px; }
+.head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }      /* 아침·저녁 카드 머리: 제목 + 「모두 ✓」 */
+.head h2 { margin: 0; }
+.all[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 700; }
 
 /* 화장품 */
 .filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
@@ -363,6 +366,8 @@ function gaps(products, now) {
 // 기한 하나씩 채우기 순서: 기한(적힌 날짜·개봉 후 기간)을 아직 모르는 제품 — 루틴에 쓰는 개봉 제품 먼저, 이름 순
 const fillOrder = products => products.filter(p => !knownExpiry(p)).sort((a, b) => b.opened - a.opened || a.name.localeCompare(b.name, 'ko')).map(p => p.id);
 const backupDue = (s, now) => !!(s.products.length || s.logs.length) && (!s.backupAt || daysBetween(s.backupAt, now) >= BACKUP_EVERY);
+// 한 자리(아침·저녁)를 한 번에 체크: 그 자리 제품(ids)이 다 체크돼 있으면 모두 끄고, 아니면 모두 켠다 → 새 체크 목록 (다른 제품의 체크는 그대로)
+const tickedAll = (cur, ids) => (ids.every(id => cur.includes(id)) ? cur.filter(id => !ids.includes(id)) : [...new Set([...cur, ...ids])]);
 // 이번 주 월요일~오늘, 루틴이 있는 자리 중 제품을 빠짐없이 「발랐어요」로 체크한 수 → { am: [다 바름, 자리 수], pm: [...] }
 function weekDone(s, now) {
   const r = { am: [0, 0], pm: [0, 0] };
@@ -595,6 +600,8 @@ function commit() {                           // 모든 변경의 끝: 자동 �
   const saved = save(); render(); return saved;
 }
 const manual = () => { state.routine.manual = true; commit(); };
+// 발랐어요 체크 정리: 한 달 지난 날과 아침·저녁 모두 빈 날은 지운다 (체크를 바꿀 때마다)
+function sweepTicks() { const all = state.ticks; for (const k in all) if (daysBetween(k, today()) > 31 || !(all[k].am.length || all[k].pm.length)) delete all[k]; }
 function toast(msg, bad) {
   const t = $('#toast');
   if (!t.showPopover) return alert(msg);      // popover 가 없는 옛 브라우저 (iOS 16 이하)
@@ -698,7 +705,9 @@ function viewRoutine() {
     const rest = editing ? state.products.filter(p => !ids.includes(p.id)).sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat)) : [];
     const add = rest.length ? `<select data-add="${t}" aria-label="${SLOTS[t]} 루틴에 제품 추가"><option value="">＋ 제품 추가</option>${rest.map(p =>
       `<option value="${esc(p.id)}">${esc(p.name)} (${CATS[p.cat][0]}${p.opened ? '' : ' · 미개봉'})</option>`).join('')}</select>` : '';
-    return `<section class="card"><h2>${t === 'am' ? '☀️' : '🌙'} ${SLOTS[t]}${canTick && real.length ? ` <small>${n === real.length ? '다 발랐어요' : `${n}/${real.length} 발랐어요`}</small>` : ''}</h2>${rows ? `<ol class="steps">${rows}</ol>` : '<p class="muted">비어 있어요</p>'}${add}</section>`;
+    // 「모두 ✓」: 하나씩 누르지 않고 그 자리를 한 번에 체크 (다 체크돼 있을 때 누르면 모두 꺼서 잘못 누른 것을 되돌린다)
+    const all = canTick && real.length ? `<button id="ka-${t}" class="chip all" data-act="tickAll" data-day="${day}" data-t="${t}" aria-pressed="${n === real.length}" aria-label="${SLOTS[t]} 모두 발랐어요">모두 ✓</button>` : '';
+    return `<section class="card"><div class="head"><h2>${t === 'am' ? '☀️' : '🌙'} ${SLOTS[t]}${canTick && real.length ? ` <small>${n === real.length ? '다 발랐어요' : `${n}/${real.length} 발랐어요`}</small>` : ''}</h2>${all}</div>${rows ? `<ol class="steps">${rows}</ol>` : '<p class="muted">비어 있어요</p>'}${add}</section>`;
   };
 
   return `<div class="days" role="group" aria-label="요일">${days}</div>
@@ -1309,8 +1318,13 @@ const ACT = {
   tick(d) {                                   // 발랐어요 켜고 끄기. 한 달 지난 체크·빈 날은 이때 치운다
     const all = state.ticks, s = (all[d.day] ??= { am: [], pm: [] })[d.t], i = s.indexOf(d.id);
     if (i < 0) s.push(d.id); else s.splice(i, 1);
-    for (const k in all) if (daysBetween(k, today()) > 31 || !(all[k].am.length || all[k].pm.length)) delete all[k];
-    commit();
+    sweepTicks(); commit();
+  },
+  tickAll(d) {                                // 그 날 그 자리(아침·저녁) 루틴 제품을 한 번에 켜거나(다 켜져 있으면) 끈다
+    if (!date(d.day) || !Object.hasOwn(SLOTS, d.t)) return;
+    const ids = state.routine.days[dow(d.day)][d.t].filter(id => product(id)), day = (state.ticks[d.day] ??= { am: [], pm: [] });
+    day[d.t] = tickedAll(day[d.t], ids);
+    sweepTicks(); commit();
   },
   filter(d) { filter = d.f; render(); },
   // 저장을 눌러야 반영. 직접 친 것처럼 input 을 알려서 쉬는 저녁 안내도 바뀐 개봉일(추정 기한)로 다시 계산되게 한다
@@ -1621,6 +1635,8 @@ function selfTest() {
   const m4 = ['m1', 'm2', 'm3', 'm4'].map(id => P({ id, name: id, cat: 'mask' })), s4 = { products: m4, logs: [], routine: { manual: false, days: generate(m4, false, '2026-11-16') } };
   eq([missing(s4, '2026-11-16').map(p => p.id), [...nextTurns(s4, ['m3', 'm4', 'zz'], '2026-11-16')], [1, 2, 0].map(turnName)],
     [['m3', 'm4'], [['m3', 1], ['m4', 2], ['zz', 0]], ['다음 주', '2주 뒤', '8주 안엔 차례가 없어요']], '자리 없는 제품의 다음 차례: 팩 자리 주 2번에 마스크 4개면 한 주에 하나씩 차례가 옴 (찾지 못하면 0)');
+  eq([tickedAll([], ['a', 'b']), tickedAll(['a'], ['a', 'b']), tickedAll(['b', 'a'], ['a', 'b']), tickedAll(['z', 'a', 'b'], ['a', 'b']), tickedAll(['z'], ['a']), tickedAll(['z'], [])],
+    [['a', 'b'], ['a', 'b'], [], ['z'], ['z', 'a'], ['z']], '「모두 ✓」: 하나라도 안 켜져 있으면 모두 켜고, 다 켜져 있으면 그 자리 것만 끔 (다른 체크는 그대로)');
   const wp = [P({ id: 'ca', cat: 'cream', when: 'pm', expiry: '2026-11-26' }), P({ id: 'cb', cat: 'cream', when: 'pm' })];
   const ws = now => ({ products: wp, logs: [], routine: { manual: false, days: generate(wp, false, now) } });
   eq([missing(ws('2026-11-16'), '2026-11-16', true).map(p => p.id), ['2026-11-16', '2026-11-18', '2026-11-22'].map(now => nextTurns(ws(now), ['cb'], now).get('cb')),
