@@ -439,7 +439,12 @@ const fail = e => toast(`저장하지 못했어요. 저장 공간이나 브라�
 // noSave: 시작할 때 저장된 내용을 못 읽었으면 쓰지 않는다 — 빈 상태로 기존 기록을 덮어쓰지 않게
 // 다른 창(홈 화면 앱·브라우저 탭·화면 분할)이 저장하면 알린다 — 오래된 창이 새 기록을 덮어쓰지 않게 (받는 쪽은 reload)
 const bc = 'BroadcastChannel' in window ? new BroadcastChannel('vanity') : null;
-const save = () => (noSave ? Promise.resolve(false) : idb.set('state', state).then(() => (bc?.postMessage('saved'), true), e => (fail(e), false)));
+let seen;                                     // 이 창이 마지막으로 저장소와 맞춘 내용 — 저장소가 그대로면 reload 는 다시 그리지 않는다
+const save = () => {
+  if (noSave) return Promise.resolve(false);
+  const s = JSON.stringify(state);
+  return idb.set('state', state).then(() => (seen = s, bc?.postMessage('saved'), true), e => (fail(e), false));
+};
 // 자동 루틴이면 다시 짠다. 직접 고친 루틴은 그대로 둔다 — 자동 때 순한 세안·먼저 바를 제품으로 들어간 자리도 사용자 것이 된다
 function arrange() {
   if (!state.routine.manual) state.routine.days = generate(state.products, isCalm(state.logs, today()), today());
@@ -1144,7 +1149,12 @@ function refresh() {
 // 다른 창이 저장했거나 이 창이 다시 보이면 저장소의 최신 내용으로 바꾼다 (못 읽었던 상태면 건드리지 않음)
 async function reload() {
   if (noSave || !state) return;
-  try { const saved = await idb.get('state'); if (saved != null) { state = cleanState(saved); arrange(); render(); } } catch {}
+  try {
+    const saved = await idb.get('state'), s = JSON.stringify(saved);
+    // 바뀐 게 없으면 다시 그리지 않는다 — 폰은 사진 찍기·고르기에서 돌아오면 이게 사진보다 먼저 돌아서, 다시 그리면 사진이 사라진 입력 칸으로 간다
+    if (saved == null || s === seen) return;
+    seen = s; state = cleanState(saved); arrange(); render();
+  } catch {}
 }
 bc?.addEventListener('message', () => reload());
 document.addEventListener('visibilitychange', () => { if (!document.hidden) reload().then(refresh); });
@@ -1303,7 +1313,7 @@ function selfTest() {
   let loaded = false;
   try {
     const saved = await idb.get('state').catch(() => idb.get('state'));      // 연결이 끊겼으면 idb 가 다시 열어 한 번 더
-    state = cleanState(saved); loaded = saved != null;
+    state = cleanState(saved); seen = JSON.stringify(saved); loaded = saved != null;
   } catch {
     state = cleanState(); noSave = true;
     toast('저장된 내용을 읽지 못했어요. 새로고침해 보세요. 지금 고친 내용은 저장되지 않아요.', true);
