@@ -715,12 +715,16 @@ async function checkForm() {                  // AI 루틴 점검 결과 창 (�
     out.textContent = r.summary || '점검을 마쳤어요.';
     // 제안이 한 제품에 관한 것이면 바로 적용 버튼 (제품은 보낸 목록의 번호로 찾는다 — checkRoutineAI)
     form.querySelector('.check').innerHTML = r.points.length ? `<ul class="alts">${r.points.map(p => {
-      const q = p.id ? product(p.id) : null, acts = !q ? '' : [
-        p.memo && !q.memo.includes(p.memo) ? `<button type="button" data-act="applyMemo" data-id="${esc(q.id)}" data-memo="${esc(p.memo)}">📝 메모에 넣기</button>` : '',
+      const q = p.id ? product(p.id) : null;
+      let acts = !q ? '' : [
+        !p.memo ? '' : !q.memo.includes(p.memo) ? `<button type="button" data-act="applyMemo" data-id="${esc(q.id)}" data-memo="${esc(p.memo)}">📝 메모에 넣기</button>`
+          : '<small>✓ 이미 메모에 있어요</small>',
         !p.when || group(q) !== 'daily' ? ''
           : q.when !== p.when ? `<button type="button" data-act="applyWhen" data-id="${esc(q.id)}" data-when="${p.when}">${p.when === 'am' ? '아침만으로' : '저녁만으로'}</button>`
           : `<small>✓ 이미 ${p.when === 'am' ? '아침만' : '저녁만'}으로 되어 있어요</small>`,      // 이미 된 것을 다시 권하면 버튼 대신 알려 준다
       ].join('');
+      // 조정인데 AI 가 메모 글·쓰는 때를 비워 보냈으면, 그 제품을 열어 직접 고치게 한다 (이 점검 창은 닫힌다)
+      if (q && !acts && p.kind === '조정') acts = `<button type="button" data-act="editProduct" data-id="${esc(q.id)}">✏️ ${esc(q.name)} 열어 고치기</button>`;
       return `<li><span class="tag ${CHECK_KINDS[p.kind]}">${p.kind}</span><span class="what"><b>${esc(p.title)}</b><small>${esc(p.detail)}</small>${acts ? `<span class="acts">${acts}</span>` : ''}</span></li>`;
     }).join('')}</ul>` : '';
   } catch (e) { if (live()) out.textContent = e.message; }
@@ -896,7 +900,7 @@ const CHECK_PROMPT = `화장품 루틴 앱이에요. 사용자의 실제 제품 
 - summary: 한국어 두 문장 이내로 전체 인상.
 - points: 최대 6개. kind 는 좋음(잘하고 있는 점) · 조정(앱 설정으로 바꾸면 좋은 점) · 주의(성분 겹침·자극처럼 조심할 점). 조정은 detail 에 앱에서 무엇을 어떻게 바꾸면 되는지(예: "○○의 쓰는 때를 저녁만으로") 적어요. 제품 이름은 목록에 있는 그대로 써요. title 은 20자 안팎, detail 은 세 문장 이내.
 - 각 point 의 product: 한 제품에 관한 항목이면 제품 목록 줄 앞의 [번호] 숫자, 아니면 0. memo: 그 제품 메모에 적어 두면 좋은 바르는 법을 30자 안팎으로(없으면 ""). when: 그 제품의 쓰는 때를 바꾸자는 제안이면 am(아침만)·pm(저녁만), 아니면 "" — 레티놀·각질·팩 제품엔 넣지 않아요. 앱이 이 칸들로 버튼을 만들어 바로 적용해요.
-- 조정 항목은 product 를 고르고 when·memo 중 맞는 것을 꼭 채워요(글로만 설명하면 버튼이 안 생겨요). 이미 그 쓰는 때로 되어 있는 제품엔 같은 쓰는 때를 권하지 않아요.
+- 조정 항목은 product 번호를 꼭 고르고 when·memo 중 맞는 것을 꼭 채워요(글로만 설명하면 버튼이 안 생겨요). 메모를 권하면 memo 칸에 적을 글 자체를 넣어요(예: "콩알만큼 덜어 바르기"). 이미 그 쓰는 때로 되어 있는 제품엔 같은 쓰는 때를 권하지 않아요.
 - 특정 브랜드 제품을 사라고 하지 않아요. 병명을 말하지 않고, 걱정되는 증상이면 피부과 상담을 권해요.`;
 const CHECK_KINDS = { 좋음: 'on', 조정: 'warn', 주의: 'bad' };      // 점검 항목 종류 → 표시 색
 const CHECK_SCHEMA = {
@@ -950,8 +954,16 @@ const readProducts = async (photo, key) => cleanItems(await askGemini([jpeg(phot
 async function checkRoutineAI(key) {
   const ids = state.products.map(p => p.id);       // 보낸 때의 번호 — 기다리는 사이 제품이 늘거나 지워져도 밀리지 않게
   const r = cleanCheck(await askGemini([{ text: routineText(state, today()) }], key, CHECK_PROMPT, CHECK_SCHEMA));
-  for (const p of r.points) p.id = ids[p.product - 1] ?? '';
+  for (const p of r.points) p.id = ids[p.product - 1] || guessProductId(p, state.products);
   return r;
+}
+// 번호를 비워 보냈으면 제목·설명에 이름 낱말(종류 이름 같은 흔한 말은 빼고)이 가장 많이 나오는 한 제품으로 — 비기면 모름
+const COMMON = new Set(Object.values(CATS).flatMap(([n]) => n.split('·')).map(norm));
+function guessProductId(p, products) {
+  const t = norm(p.title + p.detail);
+  const hits = q => q.name.split(/\s+/).map(norm).filter(w => w.length >= 2 && !COMMON.has(w) && t.includes(w)).length;
+  const [a, b] = products.map(q => [q.id, hits(q)]).filter(([, n]) => n).sort((x, y) => y[1] - x[1]);
+  return a && (!b || a[1] > b[1]) ? a[0] : '';
 }
 async function askGemini(parts, apiKey, prompt, schema) {      // parts = 보낼 사진·글
   let err;
@@ -1393,6 +1405,10 @@ function selfTest() {
     { kind: '좋음', title: 't', detail: 'd', product: -1 }] }).points.map(p => [p.product, p.memo, p.when]),
     [[3, '볼에만 얇게', 'am'], [0, '', ''], [0, '', '']], 'AI 점검 제안의 바로 적용 칸 정리 (제품은 목록 번호만)');
   eq(CHECK_SCHEMA.properties.points.items.properties.product, { type: 'integer' }, 'AI 점검 틀: 제품은 번호로 (이름 목록을 넣으면 제품이 많을 때 Gemini 가 400)');
+  const gx = [P({ id: 'n', name: '더마팩토리 나이아신아마이드 20% 세럼', cat: 'serum' }), P({ id: 'h', name: '디어스 히알루론시카 7초 세럼 인 앰플', cat: 'serum' }),
+    P({ id: 'c', name: '바이오더마 시카비오 포마드', cat: 'cream' }), P({ id: 'l1', name: '라곰 셀업 젤 투 워터 클렌저', cat: 'cleanser' }), P({ id: 'l2', name: '라곰 셀업 마이크로 포어 클렌징 오일', cat: 'oil' })];
+  eq([['고함량 세럼 사용법 메모하기', '나이아신아마이드 20% 세럼은 고함량이므로 소량씩'], ['시카 크림 쓰는 때', '시카 포마드는 저녁 전용으로'], ['라곰 제품', '라곰 셀업은 순해요'], ['세럼 정리', '세럼이 많아요']]
+    .map(([title, detail]) => guessProductId({ title, detail }, gx)), ['n', 'c', '', ''], 'AI 점검: 번호가 빠지면 이름 낱말로 한 제품 찾기 (비기거나 종류 이름뿐이면 모름)');
   const rt = routineText({ products: [P({ id: 'a', name: '토너A', cat: 'toner', actives: ['acid'], when: 'pm', memo: '부드럽게\n닦기' }), { ...P({ id: 'b', name: '크림B', cat: 'cream' }), opened: false }],
     logs: [{ date: '2026-11-10', tags: ['건조'] }, { date: '2026-11-15', tags: ['예민', '홍조'] }, { date: '2027-01-01', tags: ['좋음'] }], routine: { manual: false, days: DAYS.map((_, i) => ({ am: [], pm: i === 1 ? ['a'] : [] })) } }, '2026-11-16').split('\n');
   ok(rt.includes('- [1] 토너A | 토너·스킨 | 성분: AHA·BHA·효소 | 쓰는 때: 각질 날 저녁(화·토) 고정 | 메모: 부드럽게 닦기') && rt.includes('- [2] 크림B | 크림') && rt.includes('화 저녁: 토너A') && rt.includes('월 아침: 없음')
