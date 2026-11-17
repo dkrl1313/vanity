@@ -382,7 +382,8 @@ function weekDone(s, now) {
 // wait = true 면 거꾸로, 기한 임박한 같은 자리 제품을 먼저 쓰느라 쉬는 것만 (자동 루틴일 때)
 function missing(s, now, wait = false) {
   const inWeek = new Set(s.routine.days.flatMap(d => [...d.am, ...d.pm])), calm = !s.routine.manual && isCalm(s.logs, now);
-  return s.products.filter(p => p.opened && CATS[p.cat][1] && p.when !== 'off' && !expired(p, now) && !inWeek.has(p.id) && !(calm && ['retinol', 'acid'].includes(group(p)))
+  // 예민한 주엔 각질 성분 클렌저도 순한 것으로 바뀌어 한 주 내내 빠진다 — 자리가 모자란 게 아니니 여기서도 뺀다 (예민한 주 안내가 따로 나온다)
+  return s.products.filter(p => p.opened && CATS[p.cat][1] && p.when !== 'off' && !expired(p, now) && !inWeek.has(p.id) && !(calm && (['retinol', 'acid'].includes(group(p)) || acidic(p)))
     && wait === (!s.routine.manual && waiting(p, s.products, now)));
 }
 // 이번 주 루틴에 자리가 없는 제품이 몇 주 뒤에 다시 들어오는지 → Map(id → 주 수, max 주 안에 없으면 0). 다음 주부터 차례로 짜 보고 다 찾으면 멈춘다
@@ -420,13 +421,16 @@ function restNote(s, p, now) {
   if (!gs || !p.opened || p.when === 'off' || !CATS[p.cat][1] || expired(p, now)) return '';
   const products = s.products.some(q => q.id === p.id) ? s.products.map(q => (q.id === p.id ? p : q)) : [...s.products, p];      // 순서를 지켜야 저장한 뒤와 같은 루틴이 나온다
   const byId = new Map(products.map(q => [q.id, q])), M = s.routine.manual;
+  // 자동 루틴에서 저녁엔 원래 안 들어가는 제품(아침만·선크림·아침 비타민C)은 쉴 저녁이 없다 — 「그 자리엔 없음」이라고 하면 저녁 칸이 비는 것처럼 읽힌다
+  if (!M && !fits(p, 0, 'pm', false, NIGHTS)) return '저녁엔 원래 안 쓰는 제품이라 쉬는 저녁이 해당 없어요';
   const days = M ? s.routine.days : generate(products, isCalm(s.logs, now), now, rulesOf(s, now));
   const hit = days.map((d, i) => [DAYS[i], d.pm.map(id => byId.get(id)).filter(Boolean)]).filter(([, ps]) => ps.some(q => gs.includes(group(q))));
   if (!hit.length) return '이번 주엔 그 성분을 쓰는 저녁이 없어서 쉬는 날이 없어요';
+  // 「그 저녁엔 이 제품을 안 쓴다」는 규칙으로 말한다 — 돌려 쓰는 차례상 원래 안 들어갈 저녁도 섞여 있어서 「빠져요」라고 하면 사실과 다를 수 있다
   const when = hit.map(([d]) => d).join('·');
-  if (M) return `직접 고친 루틴이라 ${when} 저녁에서 이 제품만 빠져요 (대신 넣지는 않아요)`;
+  if (M) return `이번 주 쉬는 저녁: ${when} · 직접 고친 루틴이라 그 저녁에서 빼기만 해요 (대신 넣지는 않아요)`;
   const subs = hit.map(([d, ps]) => [d, ps.filter(q => q.cat === p.cat && q.id !== p.id).map(q => q.name).join(' + ') || '없음(비어요)']);
-  return `이번 주엔 ${when} 저녁에 쉬어요 · 그 자리엔 ${subs.every(([, n]) => n === subs[0][1]) ? subs[0][1] : subs.map(([d, n]) => `${d} ${n}`).join(', ')}`;
+  return `이번 주 쉬는 저녁: ${when} · 그 자리엔 ${subs.every(([, n]) => n === subs[0][1]) ? subs[0][1] : subs.map(([d, n]) => `${d} ${n}`).join(', ')}`;
 }
 function isCalm(logs, now) {                  // 가장 최근 피부 기록이 7일 안이고 '예민'이면 (앞날짜로 잘못 적은 기록은 무시)
   const last = logs.filter(l => l.date <= now).reduce((m, l) => (!m || l.date >= m.date ? l : m), null);
@@ -833,7 +837,7 @@ async function checkForm(ready, advice) {     // AI 루틴 점검 결과 창 (�
   modal(`<form method="dialog">
     <h2>${adv ? '📥 다른 AI 답 반영' : '✨ AI 루틴 점검'}</h2>
     <p class="ai" role="status">준비 중이에요…</p><div class="check"></div>
-    ${help(adv ? 'AI가 받은 답에서 뽑은 것이라 다를 수 있어요 — 누르기 전에 확인해 주세요' : 'AI 의견이라 틀릴 수 있어요',
+    ${help(adv ? 'AI가 받은 답에서 뽑은 것이라 다를 수 있어요 — 누르기 전에 확인해 주세요' : 'AI 의견이라 틀릴 수 있어요 · 보낸 내용 보기',
       `보내는 것: ${adv ? '붙여 넣은 글과 ' : ''}제품 이름·종류·성분·쓰는 때·메모, 이번 주 루틴, 가장 최근 피부 상태 태그 (사진·피부 메모는 안 보내요)`)}
     <div class="actions"><span class="grow"></span>${adv ? '<button type="button" data-act="pasteAdvice">다시 붙여 넣기</button>' : '<button type="button" data-act="check">다시 점검</button>'}<button class="primary">닫기</button></div></form>`);
   const form = dlg.querySelector('form'), out = form.querySelector('.ai'), again = form.querySelector('.actions [type=button]');
@@ -1309,7 +1313,8 @@ const ACT = {
     commit();
   },
   filter(d) { filter = d.f; render(); },
-  ago(d) { const el = dlg.querySelector('[name=openedAt]'); if (el) el.value = agoDate(today(), +d.d, +d.m); },      // 저장을 눌러야 반영
+  // 저장을 눌러야 반영. 직접 친 것처럼 input 을 알려서 쉬는 저녁 안내도 바뀐 개봉일(추정 기한)로 다시 계산되게 한다
+  ago(d) { const el = dlg.querySelector('[name=openedAt]'); if (el) { el.value = agoDate(today(), +d.d, +d.m); el.dispatchEvent(new Event('input', { bubbles: true })); } },
   add() { queue = []; fill = null; rebuyFor = null; productForm(); },
   again(d) { const x = state.done.find(x => x.id === d.id); if (x) { x.again = !x.again; commit(); } },
   rebuy(d) {                                  // 다시 샀어요 → 그 제품 정보로 채운 새 등록 창 (미개봉으로)
@@ -1345,7 +1350,10 @@ const ACT = {
   pasteAdvice() { refresh(); adviceForm(); },
   applyMemo(d) {                              // AI 점검 제안 → 제품 메모에 덧붙인다 (루틴에 📝로 보인다)
     const p = product(d.id); if (!p || !d.memo) return;
-    p.memo = text(p.memo ? `${p.memo} / ${d.memo}` : d.memo, 300); commit();
+    const memo = p.memo ? `${p.memo} / ${d.memo}` : d.memo;
+    // 다 들어가지 않으면 넣지 않는다 — 잘려 들어가면 「이미 있어요」로 안 바뀌어 누를 때마다 또 덧붙는다
+    if (memo.length > 300) return toast('메모가 가득 차서(300자) 넣지 못했어요. 제품을 열어 메모를 정리해 주세요.', true);
+    p.memo = memo; commit();
     applied(d, '✓ 메모에 넣었어요'); toast(`‘${p.name}’ 메모에 넣었어요`);
   },
   applyWhen(d) {                              // AI 점검 제안 → 쓰는 때 바꾸기
@@ -1446,8 +1454,9 @@ dlg.addEventListener('change', async e => {   // 사진·백업 파일 고르기
   t.value = '';
 });
 // Esc·뒤로 가기로 닫을 때도 점검 창으로 돌아온다 (shut). 브라우저가 막기를 받아 주지 않아 그대로 닫혔으면 돌아갈 답을 남기지 않는다 — 나중에 엉뚱한 창을 닫을 때 점검 창이 뜨지 않게
-dlg.addEventListener('cancel', e => { if (checkBack) { e.preventDefault(); shut(); } });
-dlg.addEventListener('close', () => { if (!dlg.open) checkBack = null; });
+// 창 자신의 이벤트만 본다 — 사진 고르기를 취소해도 그 입력 칸에서 cancel 이 올라와서(크롬 113+), 제품 창이 점검 창으로 바뀌며 고치던 내용이 사라졌다 (11-17 검토)
+dlg.addEventListener('cancel', e => { if (e.target === dlg && checkBack) { e.preventDefault(); shut(); } });
+dlg.addEventListener('close', e => { if (e.target === dlg && !dlg.open) checkBack = null; });
 dlg.addEventListener('submit', async e => {
   e.preventDefault();
   const f = e.target, d = new FormData(f);
@@ -1600,10 +1609,15 @@ function selfTest() {
   eq([rn([pom, P({ id: 'cr', name: '크림B', cat: 'cream' }), tpad]), rn([pom, tpad]), rn([pom, tpad], { logs: [{ date: '2026-11-16', tags: ['예민'] }] }),
     rn([pom, tpad], { routine: { manual: true, days: DAYS.map((_, i) => ({ am: [], pm: i === 1 ? ['pad', 'pom'] : ['pom'] })) } }),
     rn([{ ...pom, rest: '' }, tpad]), rn([{ ...pom, opened: false }, tpad]), rn([{ ...rsm, rest: 'acid' }, tpad]),
-    rn([P({ id: 's0', name: 'S0', cat: 'serum', rest: 'active' }), P({ id: 's1', name: 'S1', cat: 'serum' }), P({ id: 's2', name: 'S2', cat: 'serum' }), tpad, P({ id: 'rc', name: 'RC', cat: 'cream', actives: ['retinol'] })])],
-    ['이번 주엔 화·토 저녁에 쉬어요 · 그 자리엔 크림B', '이번 주엔 화·토 저녁에 쉬어요 · 그 자리엔 없음(비어요)', '이번 주엔 그 성분을 쓰는 저녁이 없어서 쉬는 날이 없어요',
-      '직접 고친 루틴이라 화 저녁에서 이 제품만 빠져요 (대신 넣지는 않아요)', '', '', '', '이번 주엔 월·화·금·토 저녁에 쉬어요 · 그 자리엔 월 S1, 화 S2, 금 S1, 토 S2'],
-    '쉬는 저녁 안내: 이번 주 쉬는 저녁과 그 자리에 대신 들어가는 제품 (없으면 비어요 · 예민한 주 · 직접 고친 루틴 · 해당 없는 제품은 빈 값 · 날마다 다르면 요일별로)');
+    rn([P({ id: 's0', name: 'S0', cat: 'serum', rest: 'active' }), P({ id: 's1', name: 'S1', cat: 'serum' }), P({ id: 's2', name: 'S2', cat: 'serum' }), tpad, P({ id: 'rc', name: 'RC', cat: 'cream', actives: ['retinol'] })]),
+    rn([{ ...pom, when: 'am' }, tpad])],
+    ['이번 주 쉬는 저녁: 화·토 · 그 자리엔 크림B', '이번 주 쉬는 저녁: 화·토 · 그 자리엔 없음(비어요)', '이번 주엔 그 성분을 쓰는 저녁이 없어서 쉬는 날이 없어요',
+      '이번 주 쉬는 저녁: 화 · 직접 고친 루틴이라 그 저녁에서 빼기만 해요 (대신 넣지는 않아요)', '', '', '', '이번 주 쉬는 저녁: 월·화·금·토 · 그 자리엔 월 S1, 화 S2, 금 S1, 토 S2', '저녁엔 원래 안 쓰는 제품이라 쉬는 저녁이 해당 없어요'],
+    '쉬는 저녁 안내: 이번 주 쉬는 저녁과 그 자리에 대신 들어가는 제품 (없으면 비어요 · 예민한 주 · 직접 고친 루틴 · 해당 없는 제품은 빈 값 · 날마다 다르면 요일별로 · 저녁에 안 쓰는 제품은 해당 없음)');
+  const cz = [P({ id: 'ac', cat: 'cleanser', actives: ['acid'] }), P({ id: 'mi', cat: 'cleanser' })], czDays = generate(cz, true, '2026-11-16');
+  eq([czDays.every(d => !d.am.includes('ac') && !d.pm.includes('ac')), missing({ products: cz, logs: [{ date: '2026-11-16', tags: ['예민'] }], routine: { manual: false, days: czDays } }, '2026-11-16').map(p => p.id),
+    missing({ products: cz, logs: [], routine: { manual: false, days: czDays } }, '2026-11-16').map(p => p.id)], [true, [], ['ac']],
+    '예민한 주에 순한 것으로 바뀌어 빠진 각질 클렌저는 「자리 없는 제품」에 넣지 않음 (예민한 주가 아니면 넣음)');
   const m4 = ['m1', 'm2', 'm3', 'm4'].map(id => P({ id, name: id, cat: 'mask' })), s4 = { products: m4, logs: [], routine: { manual: false, days: generate(m4, false, '2026-11-16') } };
   eq([missing(s4, '2026-11-16').map(p => p.id), [...nextTurns(s4, ['m3', 'm4', 'zz'], '2026-11-16')], [1, 2, 0].map(turnName)],
     [['m3', 'm4'], [['m3', 1], ['m4', 2], ['zz', 0]], ['다음 주', '2주 뒤', '8주 안엔 차례가 없어요']], '자리 없는 제품의 다음 차례: 팩 자리 주 2번에 마스크 4개면 한 주에 하나씩 차례가 옴 (찾지 못하면 0)');
