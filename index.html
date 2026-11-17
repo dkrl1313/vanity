@@ -37,6 +37,7 @@ h2 { font-size: 16px; margin: 0 0 4px; }
 p { margin: 0; }
 small, .muted { color: var(--muted); font-size: 13px; font-weight: 400; }
 button, select, input, textarea { font: inherit; color: inherit; }
+[hidden] { display: none !important; }        /* display 를 준 카드(.prod 등)도 hidden 이면 숨긴다 */
 button { cursor: pointer; border: 1px solid var(--line); background: var(--card); border-radius: 10px; padding: 8px 14px; min-height: 40px; }
 button:disabled { opacity: .35; cursor: default; }
 .primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 700; }
@@ -71,6 +72,7 @@ nav button[aria-current] { color: var(--accent); font-weight: 700; }
 .kinds { margin: 0 0 10px; line-height: 1.7; }
 .kinds span { white-space: nowrap; }
 .kinds b { color: var(--ink); }
+.search { margin-bottom: 10px; }
 .sortbar { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 14px; color: var(--muted); }
 .sortbar select { width: auto; min-height: 36px; padding: 4px 10px; font-size: 14px; }
 
@@ -451,7 +453,7 @@ const idb = (() => {
 const $ = s => document.querySelector(s);
 const view = $('#view'), dlg = $('#dlg');
 const esc = s => String(s).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
-let state, tab = 'routine', dayIdx = todayIdx(), shownDay = today(), editing = false, filter = 'all', sortBy = 'expiry', focusId = '', toastTimer, noSave = false;
+let state, tab = 'routine', dayIdx = todayIdx(), shownDay = today(), editing = false, filter = 'all', sortBy = 'expiry', query = '', focusId = '', toastTimer, noSave = false;
 let queue = [];                               // 사진 한 장에서 읽은 화장품 중 아직 등록 창을 안 띄운 것
 let rebuyFor = null;                          // 「다시 샀어요」로 연 등록 창이면 그 다 쓴 기록 id — 저장하면 「또 살래요」를 끈다
 let fill = null;                              // 기한 하나씩 채우기: { ids: 채울 제품 순서, i: 지금 몇 번째, done: 기한이 생긴 수 }
@@ -500,6 +502,16 @@ function render() {
   $('#soon').hidden = !n; $('#soon').innerHTML = n ? `${n}<span class="sr"> 개 기한 임박·만료</span>` : '';
   const el = id ? document.getElementById(id) : null;     // 다시 그려도 키보드 초점 유지
   (el?.disabled ? el.parentElement.querySelector('button:not(:disabled)') : el)?.focus();
+  applySearch();
+}
+// 화장품 찾기: 이름·종류·성분에 글자가 들어 있는 카드만 남긴다 (띄어쓰기·대소문자 무시)
+// 다시 그리지 않고 숨기기만 한다 — 한글을 치는 중에 입력 칸이 바뀌면 글자 조합이 끊긴다
+const norm = s => s.toLowerCase().replace(/\s+/g, '');
+function applySearch() {
+  const q = norm(query), cards = view.querySelectorAll('[data-q]'), none = view.querySelector('#noHit');
+  let n = 0;
+  for (const c of cards) n += !(c.hidden = !!q && !c.dataset.q.includes(q));
+  if (none) none.hidden = !q || n > 0 || !cards.length;
 }
 
 function viewRoutine() {
@@ -592,25 +604,26 @@ function viewProducts() {
     return `<span>${CATS[c][0]} <b>${l.length}</b>${s ? ` (미개봉 ${s})` : ''}</span>`;
   }).join(' · ');
   // 다 쓴 제품: 또 살래요 먼저, 최근에 다 쓴 것부터. 쓴 기간 = 개봉일부터 다 쓴 날까지
-  const doneCards = () => [...state.done].sort((a, b) => b.again - a.again || b.doneAt.localeCompare(a.doneAt)).map(x => `<article class="card prod">
+  const doneCards = () => [...state.done].sort((a, b) => b.again - a.again || b.doneAt.localeCompare(a.doneAt)).map(x => `<article class="card prod" data-q="${esc(norm(x.name + CATS[x.cat][0] + x.actives.map(a => ACTIVES[a]).join('')))}">
       <span class="name">${esc(x.name)}</span>${x.again ? '<span class="tag on">또 살래요</span>' : '<span></span>'}
       <small>${CATS[x.cat][0]} · ${x.openedAt ? `${x.openedAt} 개봉 → ` : ''}${x.doneAt} 다 씀${x.openedAt ? ` (${daysBetween(x.openedAt, x.doneAt) + 1}일)` : ''}</small><span></span>
       <span class="acts"><button data-act="again" data-id="${esc(x.id)}" aria-pressed="${x.again}">${x.again ? '또 살래요 해제' : '또 살래요'}</button>
         <button data-act="rebuy" data-id="${esc(x.id)}">다시 샀어요 · 등록</button><button class="danger" data-act="forget" data-id="${esc(x.id)}">기록 지우기</button></span></article>`).join('');
   const cards = filter === 'done' ? doneCards() : sortRows(rows.filter(F[filter][1]), sortBy)
-    .map(({ p, l, e, r }) => `<article class="card prod">
+    .map(({ p, l, e, r }) => `<article class="card prod" data-q="${esc(norm(p.name + sub(p)))}">
       <button id="p-${esc(p.id)}" class="name" data-act="editProduct" data-id="${esc(p.id)}">${esc(p.name)}</button>${badge(l)}
       <small>${sub(p)} · ${p.opened ? `개봉 ${p.openedAt}` : '미개봉'}${e ? `<br>${e}까지${e === openLimit(p) ? ` (개봉 후 ${p.pao}개월)` : ''}` : ''}</small>
       ${r === 'sealed' ? `<button id="open-${esc(p.id)}" class="chip" data-act="open" data-id="${esc(p.id)}" aria-label="${esc(p.name)} 오늘 개봉" title="눌러서 오늘 개봉으로">미개봉</button>`
         : `<span class="tag ${r === 'in' ? 'on' : r === 'out' ? 'warn' : ''}">${{ in: '루틴 포함', out: '루틴에 없음', skip: '루틴 제외' }[r]}</span>`}</article>`).join('');
   return `<div class="adds"><button id="add" class="primary" data-act="add">＋ 직접 등록</button>
     <label class="btn"><input type="file" accept="image/*" class="sr" data-pick="product">📷 사진으로 등록</label></div>` + (state.products.length || state.done.length
-    ? `<div class="filters" role="group" aria-label="걸러 보기">${chips}</div>`
+    ? `<input type="search" id="q" class="search" placeholder="🔍 이름·종류·성분으로 찾기" aria-label="화장품 찾기" autocomplete="off" value="${esc(query)}">`
+      + `<div class="filters" role="group" aria-label="걸러 보기">${chips}</div>`
       + (kinds ? `<p class="muted kinds">${kinds}</p>` : '')
       + (filter !== 'done' && state.products.length > 1 ? `<div class="sortbar"><label for="sort">정렬</label><select id="sort">${Object.entries(SORTS)
         .map(([k, n]) => `<option value="${k}" ${k === sortBy ? 'selected' : ''}>${n}</option>`).join('')}</select></div>` : '')
       + ((n => n && (filter === 'all' || filter === 'none') ? `<button id="fill" class="wide" data-act="fillNext">📷 기한 없는 ${n}개 하나씩 채우기</button>` : '')(rows.filter(r => !r.e).length))
-      + (cards || '<p class="empty">해당하는 화장품이 없어요</p>')
+      + (cards ? cards + '<p id="noHit" class="empty" hidden>찾는 화장품이 없어요. 띄어쓰기 없이 이름 일부만 쳐 보세요.</p>' : '<p class="empty">해당하는 화장품이 없어요</p>')
     : '<div class="empty"><p><b>등록된 화장품이 없어요</b></p><p>사진으로 등록하면 AI가 이름·종류·기한을 읽어 줘요. 한 장에 여러 개를 찍어도 돼요. 뒷면(전성분·사용기한)이 보이게 찍으면 성분까지 채워요.<br>직접 등록할 땐 이름만 적어도 종류를 골라 줘요.</p></div>');
 }
 
@@ -1128,6 +1141,7 @@ const ACT = {
   },
 };
 document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (state && b && Object.hasOwn(ACT, b.dataset.act)) ACT[b.dataset.act](b.dataset); });
+view.addEventListener('input', e => { if (e.target.id === 'q') { query = e.target.value; applySearch(); } });      // 화장품 찾기 (글자마다)
 view.addEventListener('change', e => {        // 루틴에 제품 추가 · 화장품 사진으로 등록 · 화장품 정렬
   if (e.target.id === 'sort') { sortBy = e.target.value; return render(); }
   const file = e.target.files?.[0];
@@ -1322,6 +1336,8 @@ function selfTest() {
   const so = [P({ id: 'b', name: '나', cat: 'cream', expiry: '2027-01-01' }), P({ id: 'a', name: '가', cat: 'toner' }), P({ id: 'c', name: '다', cat: 'cream', expiry: '2026-12-01' })]
     .map((p, i) => ({ p, i, e: expiryOf(p) }));
   eq(Object.keys(SORTS).map(k => sortRows(so, k).map(r => r.p.id).join('')), ['cba', 'acb', 'abc', 'cab'], '화장품 정렬: 기한(없는 건 뒤)·종류(바르는 순서)·이름·최근 등록');
+  eq(['라곰셀업', 'AHA', '레티놀', '크림'].map(q => norm('라곰 셀업 젤 투 워터 클렌저' + sub(P({ cat: 'cleanser', actives: ['acid'] }))).includes(norm(q))),
+    [true, true, false, false], '화장품 찾기: 띄어쓰기·대소문자 무시, 이름·종류·성분에서');
   const done = P({ id: 'done', cat: 'toner', actives: ['acid'] }), shelf = [done,
     { ...P({ id: 'sealed', cat: 'toner', expiry: '2027-01-01' }), opened: false, openedAt: '' },
     { ...P({ id: 'sealedAcid', cat: 'toner', actives: ['acid'], expiry: '2027-06-01' }), opened: false, openedAt: '' },
