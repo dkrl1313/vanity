@@ -133,6 +133,11 @@ form { display: grid; gap: 14px; }
 form > label, .two label, .more label { display: grid; gap: 5px; font-size: 13px; color: var(--muted); }
 .more summary { padding: 11px 0; font-size: 14px; color: var(--muted); cursor: pointer; }
 .more > div { display: grid; gap: 14px; padding-top: 4px; }
+.field { display: grid; gap: 5px; }
+.help summary { padding: 2px 0; font-size: 13px; color: var(--muted); cursor: pointer; list-style: none; }
+.help summary::-webkit-details-marker { display: none; }
+.help summary::after { content: ' ⓘ'; }
+.help small { display: block; margin-top: 4px; }
 .restnote { color: var(--ink); }
 .restnote:empty { display: none; }
 fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
@@ -577,6 +582,8 @@ function toast(msg, bad) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.matches(':popover-open') && t.hidePopover(), 3500);
 }
 function modal(html) { dlg.innerHTML = html; if (!dlg.open) dlg.showModal(); }
+// 칸 이름(짧은 글)만 보이고 설명은 그 이름(ⓘ)을 눌러서 펼친다 — 설명 글이 길어 창이 길어졌다 (11-17). 칸 자체엔 aria-label 로 이름을 붙인다
+const help = (title, text) => `<details class="help"><summary>${title}</summary><small>${text}</small></details>`;
 // 창 닫기는 모두 여기로. 점검 창의 「열어 고치기」로 연 제품 창이면 닫는 대신 받아 둔 답으로 점검 창을 그 자리에 다시 그린다 (AI 에 다시 묻지 않음)
 // close 이벤트로 하지 않는 이유: 그 이벤트는 다음 화면 그리기 때에야 와서, 창이 닫혔다 열리며 깜빡이고 늦게 온 이벤트가 새로 연 창을 건드릴 수 있다
 function shut() { const r = checkBack; checkBack = null; r ? checkForm(r) : dlg.close(); }
@@ -765,9 +772,9 @@ function productForm(p, fresh) {              // fresh = 사진에서 읽어 미
     ${fresh && state.products.some(x => x.name === p.name) ? '<p class="note">같은 이름의 화장품이 이미 등록돼 있어요.</p>' : ''}
     <label>이름 <input name="name" required pattern=".*\\S.*" maxlength="80" value="${esc(p.name)}" placeholder="예: 라운드랩 독도 토너" autocomplete="off"></label>
     <label>종류 <select name="cat">${ORDER.map(k => `<option value="${k}" ${k === p.cat ? 'selected' : ''}>${CATS[k][0]}${CATS[k][1] ? '' : ' (루틴 제외)'}</option>`).join('')}</select></label>
-    <label>쓰는 때 — 레티놀·각질 성분·팩은 아침만·저녁만과 상관없이 정해진 저녁에만 <select name="when">${[['', '자동 (종류·성분에 맞게)'], ['am', '아침만'], ['pm', '저녁만'], ['off', '루틴에 안 넣음 (덧바름용·잠시 쉼)']].map(([v, n]) =>
-      `<option value="${v}" ${v === p.when ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
-    <fieldset><legend>성분 — 들어 있으면 체크해요. 루틴의 요일·시간을 나눠요 (효소 세안제·파우더 워시도 AHA·BHA·효소)</legend><div class="checks">${Object.entries(ACTIVES).map(([k, v]) =>
+    <div class="field">${help('쓰는 때', '레티놀·각질 성분·팩은 아침만·저녁만과 상관없이 정해진 저녁에만 들어가요.')}<select name="when" aria-label="쓰는 때">${[['', '자동 (종류·성분에 맞게)'], ['am', '아침만'], ['pm', '저녁만'], ['off', '루틴에 안 넣음 (덧바름용·잠시 쉼)']].map(([v, n]) =>
+      `<option value="${v}" ${v === p.when ? 'selected' : ''}>${n}</option>`).join('')}</select></div>
+    <fieldset aria-label="성분">${help('성분', '들어 있으면 체크해요. 루틴의 요일·시간을 나눠요. 효소 세안제·파우더 워시도 AHA·BHA·효소예요.')}<div class="checks">${Object.entries(ACTIVES).map(([k, v]) =>
       `<label class="pill"><input type="checkbox" name="actives" value="${k}" ${p.actives.includes(k) ? 'checked' : ''}> ${v}</label>`).join('')}</div></fieldset>
     <label>유통기한 (용기에 적힌 날짜) <input type="date" name="expiry" value="${p.expiry}"></label>
     <label class="pill"><input type="checkbox" name="opened" ${p.opened ? 'checked' : ''}> 개봉함 (루틴에 들어가요)</label>
@@ -779,11 +786,11 @@ function productForm(p, fresh) {              // fresh = 사진에서 읽어 미
       `<button type="button" class="chip" data-act="ago" data-d="${d}" data-m="${m}">${n}</button>`).join('')}</div>
     <label>메모 <textarea name="memo" rows="2" maxlength="300">${esc(p.memo)}</textarea></label>
     <details class="more" ${p.rest || p.pair ? 'open' : ''}><summary>자세한 설정 · 쉬는 저녁, 먼저 바를 제품</summary><div>
-    <label>쉬는 저녁 — 고른 저녁엔 이 제품을 빼고 같은 종류 다른 제품을 넣어요 (예: 각질 마스크 날엔 꾸덕한 밤 빼기) <select name="rest"><option value="">없음</option>${Object.entries(REST).map(([v, [n]]) =>
-      `<option value="${v}" ${v === p.rest ? 'selected' : ''}>${n}</option>`).join('')}</select><small class="restnote" role="status">${esc(restNote(state, p, today()))}</small></label>
-    <label>먼저 바를 제품 — 이 제품 바로 앞에 붙여 발라요 (예: 레티놀 아이크림 앞에 일반 아이크림) <select name="pair"><option value="">없음</option>${state.products.filter(q => q.id !== p.id)
+    <div class="field">${help('쉬는 저녁', '고른 저녁엔 이 제품을 빼고 같은 종류 다른 제품을 넣어요. 예: 각질 마스크 날엔 꾸덕한 밤 빼기')}<select name="rest" aria-label="쉬는 저녁"><option value="">없음</option>${Object.entries(REST).map(([v, [n]]) =>
+      `<option value="${v}" ${v === p.rest ? 'selected' : ''}>${n}</option>`).join('')}</select><small class="restnote" role="status">${esc(restNote(state, p, today()))}</small></div>
+    <div class="field">${help('먼저 바를 제품', '이 제품 바로 앞에 붙여 발라요. 예: 레티놀 아이크림 앞에 일반 아이크림')}<select name="pair" aria-label="먼저 바를 제품"><option value="">없음</option>${state.products.filter(q => q.id !== p.id)
       .sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat) || a.name.localeCompare(b.name, 'ko'))
-      .map(q => `<option value="${esc(q.id)}" ${q.id === p.pair ? 'selected' : ''}>${esc(q.name)} (${CATS[q.cat][0]})</option>`).join('')}</select></label>
+      .map(q => `<option value="${esc(q.id)}" ${q.id === p.pair ? 'selected' : ''}>${esc(q.name)} (${CATS[q.cat][0]})</option>`).join('')}</select></div>
     </div></details>
     ${!isNew && p.opened ? `<button type="button" data-act="finish" data-id="${esc(p.id)}">✓ 다 썼어요 · 대신 쓸 것 찾기</button>` : ''}
     <div class="actions">${isNew ? (more ? '<button type="button" data-act="skip">건너뛰기</button>' : '') : filling ? '<button type="button" data-act="fillSkip">건너뛰기</button>'
@@ -804,7 +811,8 @@ async function checkForm(ready, advice) {     // AI 루틴 점검 결과 창 (�
   modal(`<form method="dialog">
     <h2>${adv ? '📥 다른 AI 답 반영' : '✨ AI 루틴 점검'}</h2>
     <p class="ai" role="status">준비 중이에요…</p><div class="check"></div>
-    <p class="muted">${adv ? 'AI가 받은 답에서 뽑은 것이라 빠지거나 다르게 옮겨졌을 수 있어요 — 누르기 전에 내용을 확인해 주세요. 보내는 것: 붙여 넣은 글과' : 'AI 의견이라 틀릴 수 있어요. 보내는 것:'} 제품 이름·종류·성분·쓰는 때·메모, 이번 주 루틴, 가장 최근 피부 상태 태그 (사진·피부 메모는 안 보내요)</p>
+    ${help(adv ? 'AI가 받은 답에서 뽑은 것이라 다를 수 있어요 — 누르기 전에 확인해 주세요' : 'AI 의견이라 틀릴 수 있어요',
+      `보내는 것: ${adv ? '붙여 넣은 글과 ' : ''}제품 이름·종류·성분·쓰는 때·메모, 이번 주 루틴, 가장 최근 피부 상태 태그 (사진·피부 메모는 안 보내요)`)}
     <div class="actions"><span class="grow"></span>${adv ? '<button type="button" data-act="pasteAdvice">다시 붙여 넣기</button>' : '<button type="button" data-act="check">다시 점검</button>'}<button class="primary">닫기</button></div></form>`);
   const form = dlg.querySelector('form'), out = form.querySelector('.ai'), again = form.querySelector('.actions [type=button]');
   const live = () => form.isConnected && dlg.open;      // 창을 닫았거나 다시 점검을 눌렀으면 이 결과는 버린다
@@ -850,7 +858,7 @@ async function checkForm(ready, advice) {     // AI 루틴 점검 결과 창 (�
 function adviceForm() {
   modal(`<form method="dialog" data-form="advice">
     <h2>📥 다른 AI 답 붙여 넣기</h2>
-    <p class="muted">「이번 주 루틴 글로 복사」한 글을 다른 AI 에 보내고 받은 답을 여기에 붙여 넣으면, 제품별로 「메모에 넣기」·「저녁만으로」 같은 버튼으로 바꿔 줘요. 붙여 넣은 글은 저장하지 않고, 제품 목록·이번 주 루틴과 함께 Gemini 로 보내요.</p>
+    ${help('받은 답을 제품별 버튼으로 바꿔 줘요 · 글은 Gemini 로 보내요', '「이번 주 루틴 글로 복사」한 글을 다른 AI 에 보내고, 받은 답을 여기에 붙여 넣어 주세요. 「메모에 넣기」·「저녁만으로」 같은 버튼으로 바뀌어요. 붙여 넣은 글은 저장하지 않고, 제품 목록·이번 주 루틴과 함께 보내요.')}
     <label>받은 답 <textarea name="advice" rows="8" required maxlength="8000" placeholder="여기에 붙여 넣어 주세요">${esc(lastAdvice)}</textarea></label>
     <div class="actions"><span class="grow"></span><button type="button" data-act="close">취소</button><button class="primary">버튼으로 바꾸기</button></div></form>`);
 }
