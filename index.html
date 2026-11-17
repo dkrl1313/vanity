@@ -528,6 +528,8 @@ const view = $('#view'), dlg = $('#dlg');
 const esc = s => String(s).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 let state, tab = 'routine', dayIdx = todayIdx(), shownDay = today(), editing = false, filter = 'all', kindF = '', sortBy = 'expiry', query = '', focusId = '', toastTimer, noSave = false;
 let queue = [];                               // 사진 한 장에서 읽은 화장품 중 아직 등록 창을 안 띄운 것
+// lastCheck = 마지막 AI 점검 답. checkBack = 점검 창의 「열어 고치기」로 제품 창을 열었을 때 그 답 — 제품 창이 닫히면 이것으로 점검 창에 돌아온다 (AI 에 다시 묻지 않음)
+let lastCheck = null, checkBack = null;
 let rebuyFor = null;                          // 「다시 샀어요」로 연 등록 창이면 그 다 쓴 기록 id — 저장하면 「또 살래요」를 끈다
 let fill = null;                              // 기한 하나씩 채우기: { ids: 채울 제품 순서, i: 지금 몇 번째, done: 기한이 생긴 수 }
 const BACKUP_MAX = 300 * 2 ** 20;             // ponytail: 폰 메모리로 한 번에 읽을 수 있는 백업 크기. 사진이 아주 많이 쌓이면 백업을 나눠야 한다
@@ -571,6 +573,9 @@ function toast(msg, bad) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.matches(':popover-open') && t.hidePopover(), 3500);
 }
 function modal(html) { dlg.innerHTML = html; if (!dlg.open) dlg.showModal(); }
+// 창 닫기는 모두 여기로. 점검 창의 「열어 고치기」로 연 제품 창이면 닫는 대신 받아 둔 답으로 점검 창을 그 자리에 다시 그린다 (AI 에 다시 묻지 않음)
+// close 이벤트로 하지 않는 이유: 그 이벤트는 다음 화면 그리기 때에야 와서, 창이 닫혔다 열리며 깜빡이고 늦게 온 이벤트가 새로 연 창을 건드릴 수 있다
+function shut() { const r = checkBack; checkBack = null; r ? checkForm(r) : dlg.close(); }
 
 function render() {
   const id = focusId || document.activeElement?.id; focusId = '';
@@ -781,10 +786,11 @@ function fillGo(step) {                       // 기한 채우기: 다음 제품
   fill.i += step;
   while (fill.i < fill.ids.length && !product(fill.ids[fill.i])) fill.i++;
   if (fill.i < fill.ids.length) return productForm(product(fill.ids[fill.i]));
-  const done = fill.done; fill = null; dlg.close();
+  const done = fill.done; fill = null; shut();
   toast(done ? `기한 채우기를 마쳤어요. ${done}개에 기한이 생겼어요` : '기한 채우기를 마쳤어요');
 }
-async function checkForm() {                  // AI 루틴 점검 결과 창 (「다시 점검」도 여기로)
+// ready = 받아 둔 답(「열어 고치기」로 제품 창에 갔다 돌아올 때) — AI 에 다시 묻지 않고 지금 설정에 맞춰 버튼만 다시 그린다
+async function checkForm(ready) {             // AI 루틴 점검 결과 창 (「다시 점검」도 여기로)
   modal(`<form method="dialog">
     <h2>✨ AI 루틴 점검</h2>
     <p class="ai" role="status">준비 중이에요…</p><div class="check"></div>
@@ -794,14 +800,18 @@ async function checkForm() {                  // AI 루틴 점검 결과 창 (�
   const live = () => form.isConnected && dlg.open;      // 창을 닫았거나 다시 점검을 눌렀으면 이 결과는 버린다
   again.disabled = true;
   try {
-    const key = await getKey();
-    if (!live()) return;
-    if (key === null) return void (out.textContent = '저장소를 읽지 못했어요. 다시 해 주세요.');
-    if (!key) return void (out.textContent = '⋯ 메뉴에서 Gemini API 키(무료)를 등록하면 AI가 루틴을 점검해 줘요.');
-    if (!state.products.some(p => p.opened)) return void (out.textContent = '개봉한 제품이 없어서 점검할 루틴이 없어요.');
-    out.textContent = 'AI가 루틴을 보는 중이에요… (보통 10초 안팎)';
-    const r = await checkRoutineAI(key);
-    if (!live()) return;
+    let r = ready;
+    if (!r) {
+      const key = await getKey();
+      if (!live()) return;
+      if (key === null) return void (out.textContent = '저장소를 읽지 못했어요. 다시 해 주세요.');
+      if (!key) return void (out.textContent = '⋯ 메뉴에서 Gemini API 키(무료)를 등록하면 AI가 루틴을 점검해 줘요.');
+      if (!state.products.some(p => p.opened)) return void (out.textContent = '개봉한 제품이 없어서 점검할 루틴이 없어요.');
+      out.textContent = 'AI가 루틴을 보는 중이에요… (보통 10초 안팎)';
+      r = await checkRoutineAI(key);
+      if (!live()) return;
+      lastCheck = r;                          // 화면에 그리는 답만 받아 둔다 (닫았다 다시 점검해 겹친 옛 요청이 덮어쓰지 않게)
+    }
     out.textContent = r.summary || '점검을 마쳤어요.';
     // 제안이 한 제품에 관한 것이면 바로 적용 버튼 (제품은 보낸 목록의 번호로 찾는다 — checkRoutineAI)
     form.querySelector('.check').innerHTML = r.points.length ? `<ul class="alts">${r.points.map(p => {
@@ -809,15 +819,16 @@ async function checkForm() {                  // AI 루틴 점검 결과 창 (�
       let acts = !q ? '' : [
         !p.memo ? '' : !q.memo.includes(p.memo) ? `<button type="button" data-act="applyMemo" data-id="${esc(q.id)}" data-memo="${esc(p.memo)}">📝 메모에 넣기</button>`
           : '<small>✓ 이미 메모에 있어요</small>',
-        !p.when || group(q) !== 'daily' ? ''
-          : q.when !== CHECK_WHEN[p.when][0] ? `<button type="button" data-act="applyWhen" data-id="${esc(q.id)}" data-when="${p.when}">${CHECK_WHEN[p.when][1]}으로</button>`
-          : `<small>✓ 이미 ${CHECK_WHEN[p.when][1]}으로 되어 있어요</small>`,      // 이미 된 것을 다시 권하면 버튼 대신 알려 준다
+        !p.when || (group(q) !== 'daily' && p.when !== 'off') ? ''      // 아침만·저녁만·자동은 매일 쓰는 종류에만, 루틴에 안 넣음은 어느 제품에나
+          : q.when !== CHECK_WHEN[p.when][0] ? `<button type="button" data-act="applyWhen" data-id="${esc(q.id)}" data-when="${p.when}">${CHECK_WHEN[p.when][1]}</button>`
+          : `<small>✓ 이미 ${CHECK_WHEN[p.when][1]} 되어 있어요</small>`,      // 이미 된 것을 다시 권하면 버튼 대신 알려 준다
         !p.rest || group(q) !== 'daily' ? ''
           : q.rest !== p.rest ? `<button type="button" data-act="applyRest" data-id="${esc(q.id)}" data-rest="${p.rest}">${REST[p.rest][0]}엔 쉬기</button>`
           : `<small>✓ 이미 ${REST[p.rest][0]}엔 쉬게 되어 있어요</small>`,
       ].join('');
-      // 조정인데 AI 가 메모 글·쓰는 때를 비워 보냈으면, 그 제품을 열어 직접 고치게 한다 (이 점검 창은 닫힌다)
-      if (q && !acts && p.kind === '조정') acts = `<button type="button" data-act="editProduct" data-id="${esc(q.id)}">✏️ ${esc(q.name)} 열어 고치기</button>`;
+      // 조정이면 그 제품을 열어 직접 고치는 버튼을 늘 붙인다 — AI 가 버튼으로 못 만드는 설정(성분 체크·먼저 바를 제품 등)을 권하거나 칸을 비워 보내도 막히지 않게
+      // (11-17: 조정인데 맞는 버튼이 없다는 말이 세 번째). 제품 창을 닫으면 이 점검 창으로 돌아온다 (checkBack)
+      if (q && p.kind === '조정') acts += `<button type="button" data-act="editProduct" data-id="${esc(q.id)}">✏️ ${esc(q.name)} 열어 고치기</button>`;
       return `<li><span class="tag ${CHECK_KINDS[p.kind]}">${p.kind}</span><span class="what"><b>${esc(p.title)}</b><small>${esc(p.detail)}</small>${acts ? `<span class="acts">${acts}</span>` : ''}</span></li>`;
     }).join('')}</ul>` : '';
   } catch (e) { if (live()) out.textContent = e.message; }
@@ -942,7 +953,7 @@ async function importFile(file) {
   } catch (e) { return fail(e); }             // 그때 먼저 써 둔 사진은 다음 시작 때 sweepPhotos 가 치운다
   const keep = new Set(next.logs.map(l => l.id));
   for (const l of state.logs) if (!keep.has(l.id)) idb.del('photo:' + l.id).catch(() => {});
-  state = next; dlg.close(); commit(); toast('백업을 가져왔어요');
+  state = next; shut(); commit(); toast('백업을 가져왔어요');
 }
 
 /* ───────── AI 피부 분석 (내 Google Gemini API 무료 키로 이 브라우저에서 바로 호출 — 서버 없음) ───────── */
@@ -1001,12 +1012,12 @@ ${APP_RULES}
 루틴에 실제로 보이는 것만 짚고, 위 규칙 때문에 이미 해결된 것은 말하지 않아요.
 - summary: 한국어 두 문장 이내로 전체 인상.
 - points: 최대 6개. kind 는 좋음(잘하고 있는 점) · 조정(앱 설정으로 바꾸면 좋은 점) · 주의(성분 겹침·자극처럼 조심할 점). 조정은 detail 에 앱에서 무엇을 어떻게 바꾸면 되는지(예: "○○의 쓰는 때를 저녁만으로") 적어요. 제품 이름은 목록에 있는 그대로 써요. title 은 20자 안팎, detail 은 세 문장 이내.
-- 각 point 의 product: 한 제품에 관한 항목이면 제품 목록 줄 앞의 [번호] 숫자, 아니면 0. memo: 그 제품 메모에 적어 두면 좋은 바르는 법을 30자 안팎으로(없으면 ""). when: 그 제품의 쓰는 때를 바꾸자는 제안이면 am(아침만)·pm(저녁만)·auto(아침만·저녁만으로 묶어 둔 것을 풀어 자동으로 — 아침·저녁 모두 쓰게), 아니면 "" — 레티놀·각질·팩 제품엔 넣지 않아요. rest: 그 제품을 특정 저녁엔 빼자는 제안이면 acid(각질 성분 쓰는 저녁)·retinol(레티놀 쓰는 저녁)·active(둘 다), 아니면 "" — 밤·포마드·연고처럼 꾸덕하게 덮는 제품을 각질 마스크·패드를 쓰는 저녁에 겹쳐 바르게 될 때 같은 경우예요. 레티놀·각질·팩 제품 자신과 이미 그렇게 설정된 제품엔 넣지 않아요. 앱이 이 칸들로 버튼을 만들어 바로 적용해요.
+- 각 point 의 product: 한 제품에 관한 항목이면 제품 목록 줄 앞의 [번호] 숫자, 아니면 0. memo: 그 제품 메모에 적어 두면 좋은 바르는 법을 30자 안팎으로(없으면 ""). when: 그 제품의 쓰는 때를 바꾸자는 제안이면 am(아침만)·pm(저녁만)·auto(아침만·저녁만으로 묶어 둔 것을 풀어 자동으로 — 아침·저녁 모두 쓰게)·off(루틴에 안 넣음 — 잠시 쉬거나 덧바름용으로만 쓰자는 제안), 아니면 "" — am·pm·auto 는 레티놀·각질·팩 제품엔 넣지 않아요. rest: 그 제품을 특정 저녁엔 빼자는 제안이면 acid(각질 성분 쓰는 저녁)·retinol(레티놀 쓰는 저녁)·active(둘 다), 아니면 "" — 밤·포마드·연고처럼 꾸덕하게 덮는 제품을 각질 마스크·패드를 쓰는 저녁에 겹쳐 바르게 될 때 같은 경우예요. 레티놀·각질·팩 제품 자신과 이미 그렇게 설정된 제품엔 넣지 않아요. 앱이 이 칸들로 버튼을 만들어 바로 적용해요.
 - 조정 항목은 product 번호를 꼭 고르고 when·memo·rest 중 맞는 것을 꼭 채워요(글로만 설명하면 버튼이 안 생겨요). 메모를 권하면 memo 칸에 적을 글 자체를 넣어요(예: "콩알만큼 덜어 바르기"). 이미 그 쓰는 때로 되어 있는 제품엔 같은 쓰는 때를 권하지 않아요.
 - 특정 브랜드 제품을 사라고 하지 않아요. 병명을 말하지 않고, 걱정되는 증상이면 피부과 상담을 권해요.`;
 const CHECK_KINDS = { 좋음: 'on', 조정: 'warn', 주의: 'bad' };      // 점검 항목 종류 → 표시 색
 // 점검이 권하는 쓰는 때 → [제품에 넣을 값, 버튼에 쓸 이름]. auto = 아침만·저녁만으로 묶어 둔 것을 풀기 (11-17: 「자동으로 변경해 보세요」라는 조정에 버튼이 없었다 — 틀에 값이 없어서)
-const CHECK_WHEN = { am: ['am', '아침만'], pm: ['pm', '저녁만'], auto: ['', '쓰는 때 자동'] };
+const CHECK_WHEN = { am: ['am', '아침만으로'], pm: ['pm', '저녁만으로'], auto: ['', '쓰는 때 자동으로'], off: ['off', '루틴에 안 넣음으로'] };
 const CHECK_SCHEMA = {
   type: 'object',
   properties: { summary: { type: 'string' }, points: { type: 'array', maxItems: 6, items: {
@@ -1244,11 +1255,14 @@ const ACT = {
     const x = state.done.find(x => x.id === d.id); if (!x || !confirm(`‘${x.name}’ 다 쓴 기록을 지울까요?`)) return;
     state.done = state.done.filter(y => y !== x); commit();
   },
-  skip() { rebuyFor = null; queue.length ? productForm(queue.shift(), true) : dlg.close(); },
-  editProduct(d) { fill = null; productForm(product(d.id)); },
+  skip() { rebuyFor = null; queue.length ? productForm(queue.shift(), true) : shut(); },
+  editProduct(d) {
+    const p = product(d.id); if (!p) return;      // 그사이 지워진 제품(다른 창에서 삭제)이면 빈 등록 창을 띄우지 않는다
+    checkBack = dlg.open && dlg.querySelector('.check') ? lastCheck : null; fill = null; productForm(p);
+  },
   fillNext() { fill = { ids: fillOrder(state.products), i: 0, done: 0 }; fillGo(0); },
   fillSkip() { if (fill) fillGo(1); },
-  fillStop() { fill = null; dlg.close(); },
+  fillStop() { fill = null; shut(); },
   open(d) {                                   // 미개봉 → 오늘 개봉 (개봉하면 루틴에 들어간다). 개봉일이 실수로 찍히지 않게 한 번 묻는다
     const p = product(d.id); if (!p || p.opened) return;
     if (!confirm(`‘${p.name}’을(를) 오늘 개봉한 것으로 기록할까요?\n개봉하면 루틴에 들어가요.`)) return;
@@ -1258,7 +1272,7 @@ const ACT = {
     const p = product(d.id); if (!p || !confirm(`‘${p.name}’을(를) 삭제할까요?`)) return;
     state.products = state.products.filter(x => x !== p);
     for (const day of state.routine.days) for (const t in SLOTS) day[t] = day[t].filter(id => id !== p.id);
-    dlg.close(); commit();
+    shut(); commit();
   },
   finish(d) { const p = product(d.id); if (p) finishForm(p); },
   check() { refresh(); checkForm(); },
@@ -1271,7 +1285,7 @@ const ACT = {
     const p = product(d.id); if (!p || !Object.hasOwn(CHECK_WHEN, d.when)) return;
     const [when, name] = CHECK_WHEN[d.when];
     p.when = when; dropClash(p); commit();
-    applied(d, `✓ ${name}으로 바꿨어요`); toast(`‘${p.name}’을(를) ${name}으로 바꿨어요`);
+    applied(d, `✓ ${name} 바꿨어요`); toast(`‘${p.name}’을(를) ${name} 바꿨어요`);
   },
   applyRest(d) {                              // AI 점검 제안 → 쉬는 저녁 고르기
     const p = product(d.id); if (!p || !Object.hasOwn(REST, d.rest)) return;
@@ -1289,7 +1303,7 @@ const ACT = {
       if (i >= 0) q && !a.includes(q.id) ? a.splice(i, 1, q.id) : a.splice(i, 1);
     }
     if (q && !q.opened) { q.opened = true; q.openedAt = today(); }
-    dlg.close(); commit();
+    shut(); commit();
     toast(q ? `‘${q.name}’을(를) 개봉해서 루틴에 넣었어요${again ? ' · 다 쓴 것은 재구매 목록에' : ''}` : `‘${p.name}’을(를) 다 쓴 제품에 남겼어요${again ? ' · 또 살래요' : ''}`);
   },
   addLog() { logForm(); },
@@ -1297,12 +1311,12 @@ const ACT = {
   delLog(d) {
     if (!confirm('이 피부 기록을 삭제할까요?')) return;
     state.logs = state.logs.filter(l => l.id !== d.id);
-    dlg.close();
+    shut();
     commit().then(ok => ok && idb.del('photo:' + d.id)).catch(() => {});      // 기록 삭제가 저장된 뒤에 사진을 지운다
   },
   backup() { backupForm(); },
   export() { exportAll().catch(() => toast('백업 파일을 만들지 못했어요', true)); },
-  close() { rebuyFor = null; dlg.close(); },
+  close() { rebuyFor = null; shut(); },
   analyze() { runAnalysis(dlg.querySelector('form')); },
   async saveKey() {
     const v = dlg.querySelector('[name=apiKey]').value.trim();
@@ -1364,6 +1378,9 @@ dlg.addEventListener('change', async e => {   // 사진·백업 파일 고르기
   }
   t.value = '';
 });
+// Esc·뒤로 가기로 닫을 때도 점검 창으로 돌아온다 (shut). 브라우저가 막기를 받아 주지 않아 그대로 닫혔으면 돌아갈 답을 남기지 않는다 — 나중에 엉뚱한 창을 닫을 때 점검 창이 뜨지 않게
+dlg.addEventListener('cancel', e => { if (checkBack) { e.preventDefault(); shut(); } });
+dlg.addEventListener('close', () => { if (!dlg.open) checkBack = null; });
 dlg.addEventListener('submit', async e => {
   e.preventDefault();
   const f = e.target, d = new FormData(f);
@@ -1392,8 +1409,8 @@ dlg.addEventListener('submit', async e => {
     try { if (f._draft) await idb.set('photo:' + l.id, f._draft.photo); } catch (err) { f.inert = false; return fail(err); }
     old ? Object.assign(old, l) : state.logs.push(l);
   } else if (e.submitter?.name === 'saveKey') return ACT.saveKey();      // 「키 저장」 또는 키 칸에서 Enter
-  else return dlg.close();
-  if (f.isConnected) dlg.close();            // 저장을 기다리는 사이 다른 창을 열었으면 그 창은 두고
+  else return shut();
+  if (f.isConnected) shut();            // 저장을 기다리는 사이 다른 창을 열었으면 그 창은 두고
   commit();
 });
 
@@ -1628,7 +1645,8 @@ function selfTest() {
   eq(cleanCheck({ points: [{ kind: '조정', title: 't', detail: 'd', product: 3, memo: '볼에만 얇게', when: 'am', rest: 'acid' }, { kind: '주의', title: 't', detail: 'd', product: '에스트라 크림', when: 'noon', rest: 'always' },
     { kind: '좋음', title: 't', detail: 'd', product: -1 }, { kind: '조정', title: 't', detail: 'd', product: 2, when: 'auto' }] }).points.map(p => [p.product, p.memo, p.when, p.rest]),
     [[3, '볼에만 얇게', 'am', 'acid'], [0, '', '', ''], [0, '', '', ''], [2, '', 'auto', '']], 'AI 점검 제안의 바로 적용 칸 정리 (제품은 목록 번호만, 쉬는 저녁은 정해진 값만, 쓰는 때는 아침만·저녁만·자동으로 풀기)');
-  eq([CHECK_SCHEMA.properties.points.items.properties.when.enum, CHECK_WHEN.auto[0], CHECK_PROMPT.includes('auto(')], [['', 'am', 'pm', 'auto'], '', true], 'AI 점검 틀: 쓰는 때를 자동으로 되돌리는 제안(auto → 빈 값)');
+  eq([CHECK_SCHEMA.properties.points.items.properties.when.enum, CHECK_WHEN.auto[0], CHECK_WHEN.off[0], CHECK_PROMPT.includes('auto(') && CHECK_PROMPT.includes('off(')], [['', 'am', 'pm', 'auto', 'off'], '', 'off', true],
+    'AI 점검 틀: 쓰는 때를 자동으로 되돌리는 제안(auto → 빈 값)·루틴에 안 넣음(off)');
   eq([CHECK_SCHEMA.properties.points.items.properties.rest.enum, cleanItems({ items: [{ name: '시카비오 포마드', cat: 'cream' }, { name: '시카 밤', cat: 'eye' }] }).map(p => p.rest)],
     [['', 'acid', 'retinol', 'active'], ['acid', '']], 'AI 점검 틀에 쉬는 저녁 칸, 사진 등록은 AI 가 읽은 종류가 크림일 때만 미리 고름');
   eq(CHECK_SCHEMA.properties.points.items.properties.product, { type: 'integer' }, 'AI 점검 틀: 제품은 번호로 (이름 목록을 넣으면 제품이 많을 때 Gemini 가 400)');
