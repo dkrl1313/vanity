@@ -385,6 +385,18 @@ function missing(s, now, wait = false) {
   return s.products.filter(p => p.opened && CATS[p.cat][1] && p.when !== 'off' && !expired(p, now) && !inWeek.has(p.id) && !(calm && ['retinol', 'acid'].includes(group(p)))
     && wait === (!s.routine.manual && waiting(p, s.products, now)));
 }
+// 이번 주 루틴에 자리가 없는 제품이 몇 주 뒤에 다시 들어오는지 → Map(id → 주 수, max 주 안에 없으면 0). 다음 주부터 차례로 짜 보고 다 찾으면 멈춘다
+// 지금 제품·설정 그대로라고 보고 짠다 — 기한·계절은 그 주 기준, 예민한 주는 아닌 것으로 (그때의 피부 기록은 알 수 없다)
+const TURN_WEEKS = 8;
+function nextTurns(s, ids, now, max = TURN_WEEKS) {
+  const left = new Set(ids), turns = new Map(ids.map(id => [id, 0]));
+  for (let k = 1; k <= max && left.size; k++) {
+    const day = addDays(now, 7 * k);
+    for (const d of generate(s.products, false, day, rulesOf(s, day))) for (const t in SLOTS) for (const id of d[t]) if (left.delete(id)) turns.set(id, k);
+  }
+  return turns;
+}
+const turnName = k => (k === 1 ? '다음 주' : k ? `${k}주 뒤` : `${TURN_WEEKS}주 안엔 차례가 없어요`);
 // 다 쓴 제품 p 대신 쓸 만한 것: 아직 안 뜯었고 기한 안 지난 것 중 같은 종류 → 비슷한 종류, 성분이 같은 것, 기한 빠른 것 순으로 3개 (개봉한 건 이미 루틴에서 돌아가고 있다)
 // ponytail: 종류·성분만 본다. 제형·피부 타입까지 따지려면 규칙이나 AI 판단을 더한다. 루틴에 안 넣는 종류(메이크업·바디·기타)는 안의 물건이 제각각이라 추천하지 않음
 const NEAR = { toner: ['essence'], essence: ['toner', 'serum'], serum: ['essence'], lotion: ['cream'], cream: ['lotion', 'sleep'], sleep: ['cream'] };
@@ -641,9 +653,12 @@ function viewRoutine() {
     guessGone ? `그중 ${guessGone}개는 종류별 보통 사용기간으로 잡은 추정 기한이에요 — 아직 괜찮으면 제품에 실제 기한을 적어 주세요.` : ''));
   const rest = missing(state, now, true).map(p => esc(p.name)).join(', ');
   if (rest) notes.push(note(`기한 임박 제품을 먼저 써서 쉬는 제품: ${rest}`, `기한이 ${SOON}일 안 남은 제품을 같은 자리에 매일 먼저 써요. 그 제품을 다 쓰거나 기한이 지나면 다시 돌아가며 써요.`));
-  const out = missing(state, now).map(p => esc(p.name) + (restOf(p) ? ' (쉬는 저녁을 골라 둔 제품)' : '')).join(', ');
+  const outPs = missing(state, now), out = outPs.map(p => esc(p.name) + (restOf(p) ? ' (쉬는 저녁을 골라 둔 제품)' : '')).join(', ');
+  // 자리 없는 제품은 펼치면 언제 다시 들어오는지도 — 직접 넣을지 기다릴지 정하기 쉽게 (자동 루틴만: 직접 고친 루틴은 돌아가지 않는다)
+  const turns = out && !R.manual ? nextTurns(state, outPs.map(p => p.id), now) : null;
   if (out) notes.push(R.manual ? note(`개봉했는데 루틴에 없는 제품: ${out}`)
-    : note(`이번 주 자리 없는 제품: ${out}`, '같은 종류는 한 칸에 하나씩, 레티놀·각질 성분은 한 저녁에 하나씩 돌려 써서 자리가 모자라요. 차례는 주마다 돌아가요. 이번 주에 꼭 쓰고 싶으면 직접 고치기로 넣고 「이번 주만」을 눌러 두세요 — 다음 주엔 자동 루틴으로 돌아와요.'));
+    : note(`이번 주 자리 없는 제품: ${out}`, `다시 들어오는 때 (지금 제품·설정 그대로면)<br>${outPs.map(p => `· ${esc(p.name)} — ${turnName(turns.get(p.id))}`).join('<br>')}<br>`
+      + '같은 종류는 한 칸에 하나씩, 레티놀·각질 성분은 한 저녁에 하나씩 돌려 써서 자리가 모자라요. 차례는 주마다 돌아가요. 이번 주에 꼭 쓰고 싶으면 직접 고치기로 넣고 「이번 주만」을 눌러 두세요 — 다음 주엔 자동 루틴으로 돌아와요.'));
   notes.push(...gaps(state.products, now).map(g => note(...g)));
   if (backupDue(state, now)) notes.push(note(state.backupAt ? `마지막 백업이 ${daysBetween(state.backupAt, now)}일 전이에요` : '아직 백업 파일을 만든 적이 없어요',
     `기록은 이 기기 브라우저에만 있어서 지워지면 되살릴 수 없어요.${standalone() ? '' : ' 홈 화면에 앱으로 설치해 두면 더 안전해요(⋯ 메뉴).'}`, '<button data-act="export">백업 파일 내보내기</button>'));
@@ -1582,6 +1597,9 @@ function selfTest() {
     ['이번 주엔 화·토 저녁에 쉬어요 · 그 자리엔 크림B', '이번 주엔 화·토 저녁에 쉬어요 · 그 자리엔 없음(비어요)', '이번 주엔 그 성분을 쓰는 저녁이 없어서 쉬는 날이 없어요',
       '직접 고친 루틴이라 화 저녁에서 이 제품만 빠져요 (대신 넣지는 않아요)', '', '', '', '이번 주엔 월·화·금·토 저녁에 쉬어요 · 그 자리엔 월 S1, 화 S2, 금 S1, 토 S2'],
     '쉬는 저녁 안내: 이번 주 쉬는 저녁과 그 자리에 대신 들어가는 제품 (없으면 비어요 · 예민한 주 · 직접 고친 루틴 · 해당 없는 제품은 빈 값 · 날마다 다르면 요일별로)');
+  const m4 = ['m1', 'm2', 'm3', 'm4'].map(id => P({ id, name: id, cat: 'mask' })), s4 = { products: m4, logs: [], routine: { manual: false, days: generate(m4, false, '2026-11-16') } };
+  eq([missing(s4, '2026-11-16').map(p => p.id), [...nextTurns(s4, ['m3', 'm4', 'zz'], '2026-11-16')], [1, 2, 0].map(turnName)],
+    [['m3', 'm4'], [['m3', 1], ['m4', 2], ['zz', 0]], ['다음 주', '2주 뒤', '8주 안엔 차례가 없어요']], '자리 없는 제품의 다음 차례: 팩 자리 주 2번에 마스크 4개면 한 주에 하나씩 차례가 옴 (찾지 못하면 0)');
   eq([lapsed({ manual: true, until: '2026-11-22' }, '2026-11-22'), lapsed({ manual: true, until: '2026-11-22' }, '2026-11-23'), lapsed({ manual: true, until: '' }, '2027-01-01'), lapsed({ manual: false, until: '2026-11-22' }, '2026-11-23'),
     cleanState({ routine: { manual: true, until: '2026-11-22' } }).routine.until, cleanState({ routine: { manual: false, until: '2026-11-22' } }).routine.until, cleanState({ routine: { manual: true, until: 'x' } }).routine.until],
     [false, true, false, false, '2026-11-22', '', ''], '직접 고친 루틴 「이번 주만」: 그 주 일요일이 지나면 자동으로 (계속 유지·자동 루틴은 해당 없음)');
