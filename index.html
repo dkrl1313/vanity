@@ -71,6 +71,8 @@ nav button[aria-current] { color: var(--accent); font-weight: 700; }
 .kinds { margin: 0 0 10px; line-height: 1.7; }
 .kinds span { white-space: nowrap; }
 .kinds b { color: var(--ink); }
+.sortbar { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 14px; color: var(--muted); }
+.sortbar select { width: auto; min-height: 36px; padding: 4px 10px; font-size: 14px; }
 
 /* 루틴 */
 .days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-bottom: 10px; }
@@ -449,7 +451,7 @@ const idb = (() => {
 const $ = s => document.querySelector(s);
 const view = $('#view'), dlg = $('#dlg');
 const esc = s => String(s).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
-let state, tab = 'routine', dayIdx = todayIdx(), shownDay = today(), editing = false, filter = 'all', focusId = '', toastTimer, noSave = false;
+let state, tab = 'routine', dayIdx = todayIdx(), shownDay = today(), editing = false, filter = 'all', sortBy = 'expiry', focusId = '', toastTimer, noSave = false;
 let queue = [];                               // 사진 한 장에서 읽은 화장품 중 아직 등록 창을 안 띄운 것
 let rebuyFor = null;                          // 「다시 샀어요」로 연 등록 창이면 그 다 쓴 기록 id — 저장하면 「또 살래요」를 끈다
 let fill = null;                              // 기한 하나씩 채우기: { ids: 채울 제품 순서, i: 지금 몇 번째, done: 기한이 생긴 수 }
@@ -568,11 +570,18 @@ function badge(l) {
   if (l < 0) return `<span class="tag bad">만료 ${-l}일 지남</span>`;
   return `<span class="tag ${l <= SOON ? 'warn' : ''}">${l ? 'D-' + l : '오늘까지'}</span>`;
 }
+// 화장품 목록 정렬. rows = [{ p, i: 등록한 순서, e: 기한 }] — 기한 없는 것은 기한순에서 맨 뒤
+const SORTS = { expiry: '기한 빠른 순', cat: '종류별 (바르는 순서)', name: '이름순', new: '최근 등록순' };
+function sortRows(rows, by) {
+  const exp = (a, b) => (a.e || '9').localeCompare(b.e || '9'), nm = (a, b) => a.p.name.localeCompare(b.p.name, 'ko');
+  return [...rows].sort({ expiry: (a, b) => exp(a, b) || nm(a, b), cat: (a, b) => ORDER.indexOf(a.p.cat) - ORDER.indexOf(b.p.cat) || exp(a, b) || nm(a, b),
+    name: nm, new: (a, b) => b.i - a.i }[by]);
+}
 function viewProducts() {
   if (filter === 'done' && !state.done.length) filter = 'all';
   const now = today(), inWeek = new Set(state.routine.days.flatMap(d => [...d.am, ...d.pm]));
   // 루틴 상태: sealed 미개봉 · skip 루틴에 안 넣는 종류 · in 이번 주 루틴에 있음 · out 개봉했는데 없음(만료·자리 부족·예민한 주·직접 고친 루틴)
-  const rows = state.products.map(p => ({ p, l: left(p, now), e: expiryOf(p), r: !p.opened ? 'sealed' : !CATS[p.cat][1] ? 'skip' : inWeek.has(p.id) ? 'in' : 'out' }));
+  const rows = state.products.map((p, i) => ({ p, i, l: left(p, now), e: expiryOf(p), r: !p.opened ? 'sealed' : !CATS[p.cat][1] ? 'skip' : inWeek.has(p.id) ? 'in' : 'out' }));
   const F = { all: ['전체', () => true], out: ['루틴에 없음', r => r.r === 'out'], sealed: ['미개봉', r => r.r === 'sealed'], soon: ['임박·만료', r => r.l !== null && r.l <= SOON], none: ['기한 없음', r => !r.e] };
   const chips = Object.entries(F).map(([k, [name, fn]]) =>
     `<button id="f-${k}" class="chip" data-act="filter" data-f="${k}" aria-pressed="${k === filter}">${name} ${rows.filter(fn).length}</button>`).join('')
@@ -588,8 +597,7 @@ function viewProducts() {
       <small>${CATS[x.cat][0]} · ${x.openedAt ? `${x.openedAt} 개봉 → ` : ''}${x.doneAt} 다 씀${x.openedAt ? ` (${daysBetween(x.openedAt, x.doneAt) + 1}일)` : ''}</small><span></span>
       <span class="acts"><button data-act="again" data-id="${esc(x.id)}" aria-pressed="${x.again}">${x.again ? '또 살래요 해제' : '또 살래요'}</button>
         <button data-act="rebuy" data-id="${esc(x.id)}">다시 샀어요 · 등록</button><button class="danger" data-act="forget" data-id="${esc(x.id)}">기록 지우기</button></span></article>`).join('');
-  const cards = filter === 'done' ? doneCards() : rows.filter(F[filter][1])
-    .sort((a, b) => (a.e || '9').localeCompare(b.e || '9') || a.p.name.localeCompare(b.p.name, 'ko'))
+  const cards = filter === 'done' ? doneCards() : sortRows(rows.filter(F[filter][1]), sortBy)
     .map(({ p, l, e, r }) => `<article class="card prod">
       <button id="p-${esc(p.id)}" class="name" data-act="editProduct" data-id="${esc(p.id)}">${esc(p.name)}</button>${badge(l)}
       <small>${sub(p)} · ${p.opened ? `개봉 ${p.openedAt}` : '미개봉'}${e ? `<br>${e}까지${e === openLimit(p) ? ` (개봉 후 ${p.pao}개월)` : ''}` : ''}</small>
@@ -599,6 +607,8 @@ function viewProducts() {
     <label class="btn"><input type="file" accept="image/*" class="sr" data-pick="product">📷 사진으로 등록</label></div>` + (state.products.length || state.done.length
     ? `<div class="filters" role="group" aria-label="걸러 보기">${chips}</div>`
       + (kinds ? `<p class="muted kinds">${kinds}</p>` : '')
+      + (filter !== 'done' && state.products.length > 1 ? `<div class="sortbar"><label for="sort">정렬</label><select id="sort">${Object.entries(SORTS)
+        .map(([k, n]) => `<option value="${k}" ${k === sortBy ? 'selected' : ''}>${n}</option>`).join('')}</select></div>` : '')
       + ((n => n && (filter === 'all' || filter === 'none') ? `<button id="fill" class="wide" data-act="fillNext">📷 기한 없는 ${n}개 하나씩 채우기</button>` : '')(rows.filter(r => !r.e).length))
       + (cards || '<p class="empty">해당하는 화장품이 없어요</p>')
     : '<div class="empty"><p><b>등록된 화장품이 없어요</b></p><p>사진으로 등록하면 AI가 이름·종류·기한을 읽어 줘요. 한 장에 여러 개를 찍어도 돼요. 뒷면(전성분·사용기한)이 보이게 찍으면 성분까지 채워요.<br>직접 등록할 땐 이름만 적어도 종류를 골라 줘요.</p></div>');
@@ -1118,7 +1128,8 @@ const ACT = {
   },
 };
 document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (state && b && Object.hasOwn(ACT, b.dataset.act)) ACT[b.dataset.act](b.dataset); });
-view.addEventListener('change', e => {        // 루틴에 제품 추가 · 화장품 사진으로 등록
+view.addEventListener('change', e => {        // 루틴에 제품 추가 · 화장품 사진으로 등록 · 화장품 정렬
+  if (e.target.id === 'sort') { sortBy = e.target.value; return render(); }
   const file = e.target.files?.[0];
   if (file && e.target.dataset.pick === 'product') { ACT.add(); fillFromPhoto(dlg.querySelector('form'), file); e.target.value = ''; return; }
   const t = e.target.dataset.add;
@@ -1308,6 +1319,9 @@ function selfTest() {
   eq([ug.map(d => d.am.filter(i => i !== 'near').concat(d.pm.filter(i => !['near', 'rm'].includes(i))).join()), ug.map(d => +d.pm.includes('rm')),
     missing(mk(ur), '2026-11-16').map(p => p.id), missing(mk(ur), '2026-11-16', true).map(p => p.id), missing(mk(ur, true), '2026-11-16', true).length],
     [Array(7).fill(''), [1, 0, 1, 0, 1, 0, 0], [], ['late', 'nx', 'rs'], 0], '기한 30일 안 남은 제품이 같은 자리를 매일 먼저 (레티놀은 종류가 달라도 한 자리), 나머지는 쉬는 제품으로 따로 안내');
+  const so = [P({ id: 'b', name: '나', cat: 'cream', expiry: '2027-01-01' }), P({ id: 'a', name: '가', cat: 'toner' }), P({ id: 'c', name: '다', cat: 'cream', expiry: '2026-12-01' })]
+    .map((p, i) => ({ p, i, e: expiryOf(p) }));
+  eq(Object.keys(SORTS).map(k => sortRows(so, k).map(r => r.p.id).join('')), ['cba', 'acb', 'abc', 'cab'], '화장품 정렬: 기한(없는 건 뒤)·종류(바르는 순서)·이름·최근 등록');
   const done = P({ id: 'done', cat: 'toner', actives: ['acid'] }), shelf = [done,
     { ...P({ id: 'sealed', cat: 'toner', expiry: '2027-01-01' }), opened: false, openedAt: '' },
     { ...P({ id: 'sealedAcid', cat: 'toner', actives: ['acid'], expiry: '2027-06-01' }), opened: false, openedAt: '' },
