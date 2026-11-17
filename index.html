@@ -547,7 +547,13 @@ const idb = (() => {
 const $ = s => document.querySelector(s);
 const view = $('#view'), dlg = $('#dlg');
 const esc = s => String(s).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
-let state, tab = 'routine', dayIdx = todayIdx(), shownDay = today(), editing = false, filter = 'all', kindF = '', sortBy = 'expiry', query = '', focusId = '', toastTimer, noSave = false;
+// 화장품 탭에서 고른 정렬·종류는 이 기기(브라우저)에 기억한다 — 앱을 다시 열어도 그대로. 기록(state)이 아니라 화면 편의라 백업·다른 창 동기화에는 넣지 않는다
+// 못 읽거나 못 써도(사생활 보호 모드·저장 막힘) 기본값으로 그냥 돈다
+const VIEW_KEY = 'vanity.view';
+const viewPref = (() => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch { return {}; } })();
+const keepView = () => { try { localStorage.setItem(VIEW_KEY, JSON.stringify({ sortBy, kindF })); } catch {} };
+let state, tab = 'routine', dayIdx = todayIdx(), shownDay = today(), editing = false, filter = 'all', kindF = Object.hasOwn(CATS, viewPref.kindF) ? viewPref.kindF : '',
+  sortBy = typeof viewPref.sortBy === 'string' ? viewPref.sortBy : 'expiry', query = '', focusId = '', toastTimer, noSave = false;      // sortBy 는 SORTS 를 정한 뒤 한 번 더 거른다
 let queue = [];                               // 사진 한 장에서 읽은 화장품 중 아직 등록 창을 안 띄운 것
 // lastCheck = 마지막 AI 점검 답. checkBack = 점검 창의 「열어 고치기」로 제품 창을 열었을 때 그 답 — 제품 창이 닫히면 이것으로 점검 창에 돌아온다 (AI 에 다시 묻지 않음)
 let lastCheck = null, checkBack = null, lastAdvice = '';      // lastAdvice = 방금 붙여 넣은 다른 AI 답 (저장하지 않음 — adviceForm)
@@ -713,6 +719,7 @@ function badge(l, est) {                     // est = 추정 기한
 const expiryNote = p => { const e = expiryOf(p); return !e ? '' : `${e}까지${e === openLimit(p) ? ` (개봉 후 ${p.pao}개월)` : !knownExpiry(p) ? ` (추정 · 이 종류는 보통 개봉 후 ${guessPao(p)}개월)` : ''}`; };
 // 화장품 목록 정렬. rows = [{ p, i: 등록한 순서, e: 기한 }] — 기한 없는 것은 기한순에서 맨 뒤
 const SORTS = { expiry: '기한 빠른 순', cat: '종류별 (바르는 순서)', name: '이름순', new: '최근 등록순' };
+if (!Object.hasOwn(SORTS, sortBy)) sortBy = 'expiry';      // 기억해 둔 값이 지금 없는 정렬이면 기본으로
 function sortRows(rows, by) {
   const exp = (a, b) => (a.e || '9').localeCompare(b.e || '9'), nm = (a, b) => a.p.name.localeCompare(b.p.name, 'ko');
   return [...rows].sort({ expiry: (a, b) => exp(a, b) || nm(a, b), cat: (a, b) => ORDER.indexOf(a.p.cat) - ORDER.indexOf(b.p.cat) || exp(a, b) || nm(a, b),
@@ -1393,8 +1400,8 @@ const ACT = {
 document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (state && b && Object.hasOwn(ACT, b.dataset.act)) ACT[b.dataset.act](b.dataset); });
 view.addEventListener('input', e => { if (e.target.id === 'q') { query = e.target.value; applySearch(); } });      // 화장품 찾기 (글자마다)
 view.addEventListener('change', e => {        // 루틴에 제품 추가 · 화장품 사진으로 등록 · 화장품 정렬
-  if (e.target.id === 'sort') { sortBy = e.target.value; return render(); }
-  if (e.target.id === 'kind') { kindF = e.target.value; return render(); }
+  if (e.target.id === 'sort') { sortBy = e.target.value; keepView(); return render(); }
+  if (e.target.id === 'kind') { kindF = e.target.value; keepView(); return render(); }
   const file = e.target.files?.[0];
   if (file && e.target.dataset.pick === 'product') { ACT.add(); fillFromPhoto(dlg.querySelector('form'), file); e.target.value = ''; return; }
   const t = e.target.dataset.add;
