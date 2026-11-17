@@ -415,6 +415,30 @@ function alternatives(p, products, now) {
     .sort((a, b) => rank(a) - rank(b) || diff(a) - diff(b) || (expiryOf(a) || '9').localeCompare(expiryOf(b) || '9'))
     .slice(0, 3);
 }
+// 다 썼어요 추천 (11-18): ① 이미 개봉한 제품으로 루틴의 그 자리가 채워지면 그것 — 새로 뜯으라고 하지 않는다 ② 아니면 이 장소의 미개봉 ③ 그다음 다른 장소의 미개봉 (②③ 합쳐 3개까지)
+// → { have: 그 자리를 이미 채우는 개봉 제품(안내만), pick: 직접 고친 루틴의 빈 자리에 골라 넣을 개봉 제품, open: [{ q, from: 가져올 장소 id ('' = 이 장소), place: 그 장소 이름 }…] } — 셋 중 하나만 찬다
+// 「같은 자리」 = slotOf (같은 종류, 레티놀·각질은 그 성분끼리). 「빈다」 = p 가 빠진 뒤 같은 자리 제품이 하나도 없는 요일·시간이 생기는 것
+//   자동 루틴: p 있이·없이 다시 짜서 견준다. 평소 주로 짠다(예민한 주엔 레티놀·각질이 원래 비어서 견줄 것이 없다)
+//   직접 고친 루틴: 앱이 채우지 않으니 p 가 있던 자리만 본다 — 비면, 그 시간에 써도 되는(쓰는 때가 안 어긋나는) 개봉 제품을 골라 넣게 한다
+// ponytail: 채우는 제품이 이번 주 안에 기한이 끝나도 「이어진다」고 본다(끝나면 루틴 안내가 따로 알린다). 다른 장소가 여럿이면 장소 순서대로 이어 붙인다
+// ponytail: 직접 고친 루틴에서 고를 개봉 제품이 빈 시간(아침·저녁) 중 한쪽만 채워도 미개봉은 같이 권하지 않는다 — 나머지 자리는 직접 고치기로
+function replacements(s, p, now) {
+  const out = { have: [], pick: [], open: [] };
+  if (!CATS[p.cat][1]) return out;
+  const rest = s.products.filter(q => q.id !== p.id), all = new Map(s.products.map(q => [q.id, q])), slots = Object.keys(SLOTS), M = s.routine.manual;
+  const same = q => !!q && q.id !== p.id && slotOf(q) === slotOf(p), live = q => q.opened && !expired(q, now) && q.when !== 'off';
+  const of = (days, ok) => days.map(d => Object.fromEntries(slots.map(t => [t, d[t].map(id => all.get(id)).filter(ok)])));      // 요일·시간마다 그 자리 제품
+  const mine = q => q?.id === p.id;           // id 로 견준다 — p 가 목록 안의 그 객체가 아닐 수도 있다
+  const was = M ? of(s.routine.days, mine) : of(generate(s.products, false, now, rulesOf(s, now)), q => mine(q) || same(q));
+  const will = M ? of(s.routine.days, q => same(q) && live(q)) : of(generate(rest, false, now, rulesOf(s, now)), same);
+  const gaps = was.flatMap((d, i) => slots.filter(t => d[t].length && !will[i][t].length));      // 비게 되는 시간들 (am·pm)
+  if (!gaps.length) out.have = [...new Set(will.flatMap(d => slots.flatMap(t => d[t])))];
+  else if (M) out.pick = rest.filter(q => same(q) && live(q) && gaps.some(t => !clash(q, t)));
+  if (out.have.length || out.pick.length) return out;
+  out.open = [...alternatives(p, s.products, now).map(q => ({ q, from: '', place: '' })),
+    ...s.places.filter(x => x.id !== s.place).flatMap(x => alternatives(p, s.away[x.id]?.products ?? [], now).map(q => ({ q, from: x.id, place: x.name })))].slice(0, 3);
+  return out;
+}
 // 직접 고친 루틴에서 쉬는 저녁을 고르면, 지금 그 성분 제품이 들어 있는 저녁에서 그 제품만 뺀다 (자동 루틴은 generate 가 다시 짠다)
 function dropRest(days, products, p) {
   const gs = group(p) === 'daily' && REST[p.rest]?.[1], byId = new Map(products.map(q => [q.id, q]));
@@ -1006,17 +1030,20 @@ function adviceForm() {
     <label>받은 답 <textarea name="advice" rows="8" required maxlength="8000" placeholder="여기에 붙여 넣어 주세요">${esc(lastAdvice)}</textarea></label>
     <div class="actions"><span class="grow"></span><button type="button" data-act="close">취소</button><button class="primary">버튼으로 바꾸기</button></div></form>`);
 }
-function finishForm(p) {                      // 다 썼어요 → 안 뜯은 제품 중 대신 쓸 것을 골라 바로 개봉
-  const alts = alternatives(p, state.products, today());
+function finishForm(p) {                      // 다 썼어요 → 이미 개봉한 것으로 채워지면 그대로, 아니면 안 뜯은 제품(이 장소 → 다른 장소) 중 대신 쓸 것을 골라 바로 개봉 (replacements)
+  const { have, pick, open } = replacements(state, p, today()), M = state.routine.manual;
+  const item = (q, from, place) => `<li><span class="what"><b>${esc(q.name)}</b><small>${sub(q)}${expiryOf(q) ? ` · ${expiryOf(q)}까지` : ''}${place ? ` · ${esc(place)}에 있음` : ''}</small></span>
+    <button type="button" data-act="swap" data-id="${esc(p.id)}" data-to="${esc(q.id)}" data-from="${esc(from)}" aria-label="${esc(q.name)}${from ? ` ${esc(place)}에서 가져오기` : '(으)로 바꾸기'}">${from ? '가져오기' : '이걸로'}</button></li>`;
   modal(`<form method="dialog">
     <h2>‘${esc(p.name)}’ 다 썼어요</h2>
-    ${alts.length ? `<p class="muted">아직 안 뜯은 것 중에 대신 쓸 만한 제품이에요. 고르면 오늘 개봉한 것으로 기록하고${state.routine.manual ? ' 루틴의 같은 자리에 넣어요.' : ' 루틴을 다시 짜요.'}</p>
-    <ul class="alts">${alts.map(q => `<li><span class="what"><b>${esc(q.name)}</b><small>${sub(q)}${expiryOf(q) ? ` · ${expiryOf(q)}까지` : ''}</small></span>
-      <button type="button" data-act="swap" data-id="${esc(p.id)}" data-to="${esc(q.id)}" aria-label="${esc(q.name)}(으)로 바꾸기">이걸로</button></li>`).join('')}</ul>`
+    ${have.length ? `<p class="muted">루틴은 이미 개봉한 제품으로 이어져요: ${have.slice(0, 2).map(q => `‘${esc(q.name)}’`).join(', ')}${have.length > 2 ? ` 외 ${have.length - 2}개` : ''}. 새로 뜯지 않아도 돼요.</p>`
+    : pick.length ? `<p class="muted">이미 개봉한 제품이에요. 고르면 루틴의 같은 자리에 넣어요.</p><ul class="alts">${pick.map(q => item(q, '', '')).join('')}</ul>`
+    : open.length ? `<p class="muted">아직 안 뜯은 것 중에 대신 쓸 만한 제품이에요. 고르면 ${open.some(o => o.from) ? '(다른 장소 것은 이 장소로 옮겨) ' : ''}오늘 개봉한 것으로 기록하고${M ? ' 루틴의 같은 자리에 넣어요.' : ' 루틴을 다시 짜요.'}</p>
+    <ul class="alts">${open.map(o => item(o.q, o.from, o.place)).join('')}</ul>`
     : `<p class="muted">${CATS[p.cat][1] ? '아직 안 뜯은 제품 중에 대신 쓸 만한 같은 종류가 없어요.' : '메이크업·바디·기타는 대신 쓸 제품을 추천하지 않아요.'}</p>`}
     <label class="pill"><input type="checkbox" name="again"> 또 살래요 (재구매 목록에 넣기)</label>
     <div class="actions"><span class="grow"></span><button type="button" data-act="close">취소</button>
-      <button type="button" data-act="swap" data-id="${esc(p.id)}">${alts.length ? '추천 없이 정리' : '다 쓴 제품으로 정리'}</button></div></form>`);
+      <button type="button" data-act="swap" data-id="${esc(p.id)}">${pick.length || open.length ? '추천 없이 정리' : '다 쓴 제품으로 정리'}</button></div></form>`);
 }
 const readProduct = f => { const d = new FormData(f);
   return cleanProduct({ id: f.dataset.id, name: d.get('name'), cat: d.get('cat'), actives: d.getAll('actives'), expiry: d.get('expiry'),
@@ -1599,17 +1626,30 @@ const ACT = {
     applied(d, `✓ ${REST[d.rest][0]}엔 쉬게 했어요`); toast(note ? `‘${p.name}’ 쉬는 저녁을 골랐어요 · ${note}` : `‘${p.name}’을(를) ${REST[d.rest][0]}엔 쉬게 했어요`);
   },
   swap(d) {                                   // 다 쓴 제품을 목록·루틴에서 빼고, 고른 제품이 있으면 오늘 개봉 (직접 고친 루틴은 같은 자리에 바꿔 넣는다)
-    const p = product(d.id), q = d.to ? product(d.to) : null; if (!p) return;
+    const p = product(d.id); if (!p) return;
+    let q = d.to && !d.from ? product(d.to) : null;
+    if (d.from) {                             // 다른 장소의 미개봉을 가져온다: 그 장소 목록에서 빼고 이 장소에 넣는다 (같이 쓰는 장소면 다음에 맞출 때 그쪽 목록에서도 빠진다 — 물건이 옮겨 왔으니)
+      const shelf = state.away[d.from], src = shelf?.products.find(x => x.id === d.to);
+      if (!src || src.opened || expired(src, today())) return toast('그 제품을 찾지 못했어요. 창을 닫고 다시 해 주세요.', true);      // 창을 연 사이 다른 창에서 지웠거나 개봉했다
+      state.away[d.from] = cleanShelf({ ...shelf, products: shelf.products.filter(x => x !== src) });      // 그 장소의 루틴·체크·먼저 바를 제품에서도 뺀다
+      state.products.push(q = cleanProduct({ ...src, id: uid(), pair: '' }));      // id 는 새로 — 두 장소에 같은 id 가 있으면(백업을 합친 경우) 한쪽이 버려진다
+    }
     const again = !!dlg.querySelector('[name=again]')?.checked;      // 다 쓴 제품 기록에 남긴다 (화장품 목록 「다 쓴 제품」)
     state.done.push(cleanDone({ name: p.name, cat: p.cat, actives: p.actives, when: p.when, rest: p.rest, harsh: p.harsh, openedAt: p.openedAt, doneAt: today(), again }));
     state.products = state.products.filter(x => x !== p);
+    let placed = !state.routine.manual;       // 자동 루틴은 다시 짜면서 들어간다. 직접 고친 루틴은 다 쓴 제품이 있던 자리에만 넣는다
     for (const day of state.routine.days) for (const t in SLOTS) {
       const a = day[t], i = a.indexOf(p.id);
-      if (i >= 0) q && !a.includes(q.id) ? a.splice(i, 1, q.id) : a.splice(i, 1);
+      if (i < 0) continue;
+      const fit = !!q && !clash(q, t);        // 쓰는 때가 어긋나는 자리(아침만 제품을 저녁 자리)엔 넣지 않고 비운다
+      fit && !a.includes(q.id) ? a.splice(i, 1, q.id) : a.splice(i, 1);
+      placed ||= fit;
     }
-    if (q && !q.opened) { q.opened = true; q.openedAt = today(); }
+    const fresh = !!q && !q.opened;           // 이미 개봉한 것을 직접 고친 루틴 자리에 넣는 경우는 개봉일을 건드리지 않는다
+    if (fresh) { q.opened = true; q.openedAt = today(); }
     shut(); commit();
-    toast(q ? `‘${q.name}’을(를) 개봉해서 루틴에 넣었어요${again ? ' · 다 쓴 것은 재구매 목록에' : ''}` : `‘${p.name}’을(를) 다 쓴 제품에 남겼어요${again ? ' · 또 살래요' : ''}`);
+    toast(q ? `‘${q.name}’을(를) ${d.from ? '가져와 ' : ''}${placed ? `${fresh ? '개봉해서 ' : ''}루틴에 넣었어요` : '개봉했어요 · 직접 고친 루틴엔 맞는 자리가 없어 넣지 않았어요'}${again ? ' · 다 쓴 것은 재구매 목록에' : ''}`
+      : `‘${p.name}’을(를) 다 쓴 제품에 남겼어요${again ? ' · 또 살래요' : ''}`);
   },
   addLog() { logForm(); },
   editLog(d) { logForm(state.logs.find(l => l.id === d.id)); },
@@ -2051,6 +2091,24 @@ function selfTest() {
     { ...P({ id: 'sealedAcid', cat: 'toner', actives: ['acid'], expiry: '2027-06-01' }), opened: false, openedAt: '' },
     { ...P({ id: 'ess', cat: 'essence' }), opened: false }, P({ id: 'using', cat: 'toner' }),
     { ...P({ id: 'gone', cat: 'toner', expiry: '2026-01-01' }), opened: false }, { ...P({ id: 'cr', cat: 'cream' }), opened: false }];
+  // 다 썼어요 추천 순서: 이미 개봉한 것으로 채워지면 그것만 → 이 장소 미개봉 → 다른 장소 미개봉
+  const UN = o => ({ ...P(o), opened: false }), tn = P({ id: 'tn', cat: 'toner' }), tn2 = P({ id: 'tn2', cat: 'toner' });
+  const RS = (products, over = {}) => cleanState({ products, places: [{ id: 'home', name: '자취방' }, { id: 'born', name: '본가' }], place: 'home', ...over });
+  const rp = (s, p) => (r => [r.have.map(q => q.id).join(), r.pick.map(q => q.id).join(), r.open.map(o => `${o.q.id}@${o.place || '여기'}`).join()].join(' / '))(replacements(s, p, '2026-11-16'));
+  const bornUn = { born: { products: [UN({ id: 'bt', cat: 'toner' }), UN({ id: 'be', cat: 'essence' }), P({ id: 'bo', cat: 'toner' })] } };
+  const crAll = P({ id: 'crA', cat: 'cream' }), crPm = P({ id: 'crP', cat: 'cream', when: 'pm' }), ret = P({ id: 'ret', cat: 'serum', actives: ['retinol'] }), dser = P({ id: 'day', cat: 'serum' });
+  eq([rp(RS([tn, tn2, UN({ id: 'ut', cat: 'toner' })], { away: bornUn }), tn), rp(RS([tn, UN({ id: 'ut', cat: 'toner' })], { away: bornUn }), tn), rp(RS([tn], { away: bornUn }), tn), rp(RS([tn]), tn),
+    rp(RS([crAll, crPm, UN({ id: 'uc', cat: 'cream' })]), crAll), rp(RS([crAll, crPm]), crPm), rp(RS([ret, dser, UN({ id: 'ur', cat: 'serum', actives: ['retinol'] })]), ret),
+    rp(RS([P({ id: 'mk', cat: 'makeup' }), UN({ id: 'um', cat: 'makeup' })]), P({ id: 'mk', cat: 'makeup' })), rp(cleanState({ products: [tn, UN({ id: 'ut', cat: 'toner' })] }), tn),
+    rp(RS([{ ...tn, when: 'off' }, UN({ id: 'ut', cat: 'toner' })]), { ...tn, when: 'off' })],
+    ['tn2 /  / ', ' /  / ut@여기,bt@본가,be@본가', ' /  / bt@본가,be@본가', ' /  / ',
+      ' /  / uc@여기', 'crA /  / ', ' /  / ur@여기', ' /  / ', ' /  / ut@여기', ' /  / ut@여기'],
+    '다 썼어요 추천: 이미 개봉한 같은 자리 제품으로 채워지면 새로 뜯으라고 하지 않고 · 아니면 이 장소 미개봉 → 다른 장소 미개봉 순 (다른 장소의 개봉 제품은 안 넣음 · 아침 자리가 비면 채워진 게 아님 · 레티놀은 레티놀끼리 · 루틴에 안 넣던 제품도 미개봉 추천)');
+  const mDays = (am, pm) => ({ manual: true, days: DAYS.map(() => ({ am, pm })) }), ut = UN({ id: 'ut', cat: 'toner' }), tnAm = P({ id: 'tnA', cat: 'toner', when: 'am' });
+  eq([rp(RS([tn, tn2, ut], { routine: mDays(['tn'], ['tn', 'tn2']) }), tn), rp(RS([tn, tn2, ut], { routine: mDays(['tn', 'tn2'], ['tn', 'tn2']) }), tn), rp(RS([tn, tn2, ut], { routine: mDays([], ['tn2']) }), tn),
+    rp(RS([tn, ut], { routine: mDays(['tn'], []) }), tn), rp(RS([tn, tnAm, ut], { routine: mDays([], ['tn']) }), tn), rp(RS([tn, tnAm, ut], { routine: mDays(['tn'], ['tn']) }), tn)],
+    [' / tn2 / ', 'tn2 /  / ', 'tn2 /  / ', ' /  / ut@여기', ' /  / ut@여기', ' / tnA / '],
+    '다 썼어요 추천(직접 고친 루틴): 빈 자리가 생기면 그 시간에 써도 되는 개봉 제품을 골라 넣게 하고(아침만 제품을 저녁 자리엔 권하지 않음) · 이미 같은 자리 제품이 들어 있으면 그대로 · 넣을 개봉 제품이 없으면 미개봉 추천');
   eq([alternatives(done, shelf, '2026-11-16').map(q => q.id), alternatives(P({ cat: 'makeup' }), [{ ...P({ cat: 'makeup' }), opened: false }], '2026-11-16')],
     [['sealedAcid', 'sealed', 'ess'], []], '다 쓴 제품 대체 추천: 안 뜯은 것 중 같은 종류·같은 성분 먼저, 개봉한 것·만료·다른 종류·메이크업 제외');
   eq(cleanProduct({ name: 'B', cat: ['serum'] }).cat, 'etc', '종류 값이 배열이면 버림');
