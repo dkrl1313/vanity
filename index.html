@@ -391,10 +391,9 @@ function missing(s, now, wait = false) {
 const TURN_WEEKS = 8;
 function nextTurns(s, ids, now, max = TURN_WEEKS) {
   const left = new Set(ids), turns = new Map(ids.map(id => [id, 0]));
-  for (let k = 1; k <= max && left.size; k++) {
-    const day = addDays(now, 7 * k);
+  // 그 주의 월요일과 일요일 기준으로 한 번씩 짠다 — 주중에 기한이 지나는 제품이 있으면 그날부터 루틴이 바뀌어서(임박 제품이 끝나 쉬던 제품이 들어옴), 한 날만 보면 한 주 늦게 나온다
+  for (let k = 1; k <= max && left.size; k++) for (const day of [addDays(monday(now), 7 * k), addDays(monday(now), 7 * k + 6)])
     for (const d of generate(s.products, false, day, rulesOf(s, day))) for (const t in SLOTS) for (const id of d[t]) if (left.delete(id)) turns.set(id, k);
-  }
   return turns;
 }
 const turnName = k => (k === 1 ? '다음 주' : k ? `${k}주 뒤` : `${TURN_WEEKS}주 안엔 차례가 없어요`);
@@ -661,14 +660,13 @@ function viewRoutine() {
   const guessGone = state.products.filter(p => p.opened && expired(p, now) && !knownExpiry(p)).length;
   if (gone) notes.push(note(`기한 지난 개봉 제품 ${gone}개${R.manual ? '' : ' — 루틴에서 뺐어요'}`,
     guessGone ? `그중 ${guessGone}개는 종류별 보통 사용기간으로 잡은 추정 기한이에요 — 아직 괜찮으면 제품에 실제 기한을 적어 주세요.` : ''));
-  const rest = missing(state, now, true).map(p => esc(p.name)).join(', ');
-  if (rest) notes.push(note(`기한 임박 제품을 먼저 써서 쉬는 제품: ${rest}`, `기한이 ${SOON}일 안 남은 제품을 같은 자리에 매일 먼저 써요. 그 제품을 다 쓰거나 기한이 지나면 다시 돌아가며 써요.`));
+  // 이번 주에 빠진 제품은 펼치면 언제 다시 들어오는지도 — 직접 넣을지 기다릴지 정하기 쉽게 (자동 루틴만: 직접 고친 루틴은 돌아가지 않는다)
+  const back = ps => { const t = nextTurns(state, ps.map(p => p.id), now); return `다시 들어오는 때 (지금 제품·설정 그대로면)<br>${ps.map(p => `· ${esc(p.name)} — ${turnName(t.get(p.id))}`).join('<br>')}<br>`; };
+  const restPs = missing(state, now, true), rest = restPs.map(p => esc(p.name)).join(', ');      // 자동 루틴일 때만 나온다
+  if (rest) notes.push(note(`기한 임박 제품을 먼저 써서 쉬는 제품: ${rest}`, `${back(restPs)}기한이 ${SOON}일 안 남은 제품을 같은 자리에 매일 먼저 써요. 그 제품의 기한이 지나면 다시 돌아가며 쓰고, 먼저 다 쓰면 더 일찍 들어와요.`));
   const outPs = missing(state, now), out = outPs.map(p => esc(p.name) + (restOf(p) ? ' (쉬는 저녁을 골라 둔 제품)' : '')).join(', ');
-  // 자리 없는 제품은 펼치면 언제 다시 들어오는지도 — 직접 넣을지 기다릴지 정하기 쉽게 (자동 루틴만: 직접 고친 루틴은 돌아가지 않는다)
-  const turns = out && !R.manual ? nextTurns(state, outPs.map(p => p.id), now) : null;
   if (out) notes.push(R.manual ? note(`개봉했는데 루틴에 없는 제품: ${out}`)
-    : note(`이번 주 자리 없는 제품: ${out}`, `다시 들어오는 때 (지금 제품·설정 그대로면)<br>${outPs.map(p => `· ${esc(p.name)} — ${turnName(turns.get(p.id))}`).join('<br>')}<br>`
-      + '같은 종류는 한 칸에 하나씩, 레티놀·각질 성분은 한 저녁에 하나씩 돌려 써서 자리가 모자라요. 차례는 주마다 돌아가요. 이번 주에 꼭 쓰고 싶으면 직접 고치기로 넣고 「이번 주만」을 눌러 두세요 — 다음 주엔 자동 루틴으로 돌아와요.'));
+    : note(`이번 주 자리 없는 제품: ${out}`, `${back(outPs)}같은 종류는 한 칸에 하나씩, 레티놀·각질 성분은 한 저녁에 하나씩 돌려 써서 자리가 모자라요. 차례는 주마다 돌아가요. 이번 주에 꼭 쓰고 싶으면 직접 고치기로 넣고 「이번 주만」을 눌러 두세요 — 다음 주엔 자동 루틴으로 돌아와요.`));
   notes.push(...gaps(state.products, now).map(g => note(...g)));
   if (backupDue(state, now)) notes.push(note(state.backupAt ? `마지막 백업이 ${daysBetween(state.backupAt, now)}일 전이에요` : '아직 백업 파일을 만든 적이 없어요',
     `기록은 이 기기 브라우저에만 있어서 지워지면 되살릴 수 없어요.${standalone() ? '' : ' 홈 화면에 앱으로 설치해 두면 더 안전해요(⋯ 메뉴).'}`, '<button data-act="export">백업 파일 내보내기</button>'));
@@ -1623,6 +1621,11 @@ function selfTest() {
   const m4 = ['m1', 'm2', 'm3', 'm4'].map(id => P({ id, name: id, cat: 'mask' })), s4 = { products: m4, logs: [], routine: { manual: false, days: generate(m4, false, '2026-11-16') } };
   eq([missing(s4, '2026-11-16').map(p => p.id), [...nextTurns(s4, ['m3', 'm4', 'zz'], '2026-11-16')], [1, 2, 0].map(turnName)],
     [['m3', 'm4'], [['m3', 1], ['m4', 2], ['zz', 0]], ['다음 주', '2주 뒤', '8주 안엔 차례가 없어요']], '자리 없는 제품의 다음 차례: 팩 자리 주 2번에 마스크 4개면 한 주에 하나씩 차례가 옴 (찾지 못하면 0)');
+  const wp = [P({ id: 'ca', cat: 'cream', when: 'pm', expiry: '2026-11-26' }), P({ id: 'cb', cat: 'cream', when: 'pm' })];
+  const ws = now => ({ products: wp, logs: [], routine: { manual: false, days: generate(wp, false, now) } });
+  eq([missing(ws('2026-11-16'), '2026-11-16', true).map(p => p.id), ['2026-11-16', '2026-11-18', '2026-11-22'].map(now => nextTurns(ws(now), ['cb'], now).get('cb')),
+    nextTurns({ ...ws('2026-11-17'), products: [{ ...wp[0], expiry: '2026-12-10' }, wp[1]] }, ['cb'], '2026-11-17').get('cb')],
+    [['cb'], [1, 1, 1], 3], '기한 임박 제품 때문에 쉬는 제품의 다음 차례: 그 제품의 기한이 지나는 주 (주중에 지나도, 오늘이 무슨 요일이어도 같음)');
   eq([lapsed({ manual: true, until: '2026-11-22' }, '2026-11-22'), lapsed({ manual: true, until: '2026-11-22' }, '2026-11-23'), lapsed({ manual: true, until: '' }, '2027-01-01'), lapsed({ manual: false, until: '2026-11-22' }, '2026-11-23'),
     cleanState({ routine: { manual: true, until: '2026-11-22' } }).routine.until, cleanState({ routine: { manual: false, until: '2026-11-22' } }).routine.until, cleanState({ routine: { manual: true, until: 'x' } }).routine.until],
     [false, true, false, false, '2026-11-22', '', ''], '직접 고친 루틴 「이번 주만」: 그 주 일요일이 지나면 자동으로 (계속 유지·자동 루틴은 해당 없음)');
