@@ -208,7 +208,12 @@ function addMonths(s, n) {                    // 1/31 + 1개월 = 2월 말일 (�
 }
 
 const openLimit = p => (p.opened && p.openedAt && p.pao ? addMonths(p.openedAt, p.pao) : '');
-const expiryOf = p => [p.expiry, openLimit(p)].filter(Boolean).sort()[0] || '';   // 적힌 기한과 개봉 기한 중 빠른 쪽
+const knownExpiry = p => [p.expiry, openLimit(p)].filter(Boolean).sort()[0] || '';   // 적힌 기한과 개봉 기한 중 빠른 쪽
+// 기한·사용기간을 모르는 개봉 제품은 개봉일 + 종류별 보통 사용기간으로 대략 잡는다 (화면엔 「추정」, 적으면 그쪽을 쓴다)
+// ponytail: 종류·성분만 본다. 비타민C·레티놀은 빨리 변해서 6개월. 기타는 무엇인지 몰라 잡지 않음
+const guessPao = p => p.cat === 'etc' ? 0 : p.actives.some(a => a === 'retinol' || a === 'vitc') ? 6 : { eye: 6, faceoil: 6 }[p.cat] ?? 12;
+const guessed = p => (!knownExpiry(p) && p.opened && p.openedAt && guessPao(p) ? addMonths(p.openedAt, guessPao(p)) : '');
+const expiryOf = p => knownExpiry(p) || guessed(p);
 const left = (p, now) => (expiryOf(p) ? daysBetween(now, expiryOf(p)) : null);    // 남은 날 (기한 없으면 null)
 const expired = (p, now) => (left(p, now) ?? 0) < 0;                              // 기한 당일까지는 사용
 
@@ -308,7 +313,7 @@ function gaps(products, now) {
   return out;
 }
 // 기한 하나씩 채우기 순서: 기한(적힌 날짜·개봉 후 기간)을 아직 모르는 제품 — 루틴에 쓰는 개봉 제품 먼저, 이름 순
-const fillOrder = products => products.filter(p => !expiryOf(p)).sort((a, b) => b.opened - a.opened || a.name.localeCompare(b.name, 'ko')).map(p => p.id);
+const fillOrder = products => products.filter(p => !knownExpiry(p)).sort((a, b) => b.opened - a.opened || a.name.localeCompare(b.name, 'ko')).map(p => p.id);
 const backupDue = (s, now) => !!(s.products.length || s.logs.length) && (!s.backupAt || daysBetween(s.backupAt, now) >= BACKUP_EVERY);
 // 이번 주 월요일~오늘, 루틴이 있는 자리 중 제품을 빠짐없이 「발랐어요」로 체크한 수 → { am: [다 바름, 자리 수], pm: [...] }
 function weekDone(s, now) {
@@ -530,7 +535,9 @@ function viewRoutine() {
   // 계절 규칙으로 이번 주 루틴이 실제로 달라졌을 때만 알린다 (해당 제품이 없거나 예민한 주라 이미 쉬면 말하지 않음)
   if (!R.manual && JSON.stringify(R.days) !== JSON.stringify(generate(state.products, calmNow, now))) notes.push(SEASONS[seasonOf(now)].note);
   const gone = state.products.filter(p => p.opened && expired(p, now)).length;
-  if (gone) notes.push(`기한이 지난 개봉 제품이 ${gone}개 있어요.${R.manual ? '' : ' 루틴에서는 뺐어요.'}`);
+  const guessGone = state.products.filter(p => p.opened && expired(p, now) && !knownExpiry(p)).length;
+  if (gone) notes.push(`기한이 지난 개봉 제품이 ${gone}개 있어요.${R.manual ? '' : ' 루틴에서는 뺐어요.'}`
+    + (guessGone ? ` 그중 ${guessGone}개는 종류별 보통 사용기간으로 잡은 추정 기한이에요 — 아직 괜찮으면 제품에 실제 기한을 적어 주세요.` : ''));
   const rest = missing(state, now, true).map(p => esc(p.name)).join(', ');
   if (rest) notes.push(`기한이 ${SOON}일 안 남은 제품을 같은 자리에 매일 먼저 써요. 그동안 쉬는 제품: ${rest}`);
   const out = missing(state, now).map(p => esc(p.name)).join(', ');
@@ -578,11 +585,14 @@ function viewRoutine() {
     <button id="check" class="wide" data-act="check">✨ AI 루틴 점검</button>`;
 }
 
-function badge(l) {
+function badge(l, est) {                     // est = 추정 기한
   if (l === null) return '<span class="tag">기한 없음</span>';
-  if (l < 0) return `<span class="tag bad">만료 ${-l}일 지남</span>`;
-  return `<span class="tag ${l <= SOON ? 'warn' : ''}">${l ? 'D-' + l : '오늘까지'}</span>`;
+  const pre = est ? '추정 ' : '';
+  if (l < 0) return `<span class="tag bad">${pre}만료 ${-l}일 지남</span>`;
+  return `<span class="tag ${l <= SOON ? 'warn' : ''}">${pre}${l ? 'D-' + l : '오늘까지'}</span>`;
 }
+// 기한 한 줄: 「…까지 (개봉 후 12개월)」, 추정이면 어떻게 잡았는지
+const expiryNote = p => { const e = expiryOf(p); return !e ? '' : `${e}까지${e === openLimit(p) ? ` (개봉 후 ${p.pao}개월)` : !knownExpiry(p) ? ` (추정 · 이 종류는 보통 개봉 후 ${guessPao(p)}개월)` : ''}`; };
 // 화장품 목록 정렬. rows = [{ p, i: 등록한 순서, e: 기한 }] — 기한 없는 것은 기한순에서 맨 뒤
 const SORTS = { expiry: '기한 빠른 순', cat: '종류별 (바르는 순서)', name: '이름순', new: '최근 등록순' };
 function sortRows(rows, by) {
@@ -594,11 +604,11 @@ function viewProducts() {
   if (filter === 'done' && !state.done.length) filter = 'all';
   const now = today(), inWeek = new Set(state.routine.days.flatMap(d => [...d.am, ...d.pm]));
   // 루틴 상태: sealed 미개봉 · skip 루틴에 안 넣는 종류 · in 이번 주 루틴에 있음 · out 개봉했는데 없음(만료·자리 부족·예민한 주·직접 고친 루틴)
-  const rows = state.products.map((p, i) => ({ p, i, l: left(p, now), e: expiryOf(p), r: !p.opened ? 'sealed' : !CATS[p.cat][1] ? 'skip' : inWeek.has(p.id) ? 'in' : 'out' }));
+  const rows = state.products.map((p, i) => ({ p, i, l: left(p, now), e: expiryOf(p), k: knownExpiry(p), r: !p.opened ? 'sealed' : !CATS[p.cat][1] ? 'skip' : inWeek.has(p.id) ? 'in' : 'out' }));
   // 종류 걸러 보기: 위 상태 칩과 함께 쓴다 (칩 숫자도 그 종류 안에서). 고른 종류가 다 지워졌으면 푼다
   if (kindF && !state.products.some(p => p.cat === kindF) && !state.done.some(x => x.cat === kindF)) kindF = '';
   const shown = kindF ? rows.filter(r => r.p.cat === kindF) : rows, done = state.done.filter(x => !kindF || x.cat === kindF);
-  const F = { all: ['전체', () => true], out: ['루틴에 없음', r => r.r === 'out'], sealed: ['미개봉', r => r.r === 'sealed'], soon: ['임박·만료', r => r.l !== null && r.l <= SOON], none: ['기한 없음', r => !r.e] };
+  const F = { all: ['전체', () => true], out: ['루틴에 없음', r => r.r === 'out'], sealed: ['미개봉', r => r.r === 'sealed'], soon: ['임박·만료', r => r.l !== null && r.l <= SOON], none: ['기한 모름', r => !r.k] };      // 추정 기한만 있는 것도 실제 기한은 모름
   const chips = Object.entries(F).map(([k, [name, fn]]) =>
     `<button id="f-${k}" class="chip" data-act="filter" data-f="${k}" aria-pressed="${k === filter}">${name} ${shown.filter(fn).length}</button>`).join('')
     + (state.done.length ? `<button id="f-done" class="chip" data-act="filter" data-f="done" aria-pressed="${filter === 'done'}">다 쓴 제품 ${done.length}</button>` : '');
@@ -616,9 +626,9 @@ function viewProducts() {
       <span class="acts"><button data-act="again" data-id="${esc(x.id)}" aria-pressed="${x.again}">${x.again ? '또 살래요 해제' : '또 살래요'}</button>
         <button data-act="rebuy" data-id="${esc(x.id)}">다시 샀어요 · 등록</button><button class="danger" data-act="forget" data-id="${esc(x.id)}">기록 지우기</button></span></article>`).join('');
   const cards = filter === 'done' ? doneCards() : sortRows(shown.filter(F[filter][1]), sortBy)
-    .map(({ p, l, e, r }) => `<article class="card prod" data-q="${esc(norm(p.name + sub(p)))}">
-      <button id="p-${esc(p.id)}" class="name" data-act="editProduct" data-id="${esc(p.id)}">${esc(p.name)}</button>${badge(l)}
-      <small>${sub(p)} · ${p.opened ? `개봉 ${p.openedAt}` : '미개봉'}${e ? `<br>${e}까지${e === openLimit(p) ? ` (개봉 후 ${p.pao}개월)` : ''}` : ''}</small>
+    .map(({ p, l, e, k, r }) => `<article class="card prod" data-q="${esc(norm(p.name + sub(p)))}">
+      <button id="p-${esc(p.id)}" class="name" data-act="editProduct" data-id="${esc(p.id)}">${esc(p.name)}</button>${badge(l, e && !k)}
+      <small>${sub(p)} · ${p.opened ? `개봉 ${p.openedAt}` : '미개봉'}${e ? `<br>${expiryNote(p)}` : ''}</small>
       ${r === 'sealed' ? `<button id="open-${esc(p.id)}" class="chip" data-act="open" data-id="${esc(p.id)}" aria-label="${esc(p.name)} 오늘 개봉" title="눌러서 오늘 개봉으로">미개봉</button>`
         : `<span class="tag ${r === 'in' ? 'on' : r === 'out' ? 'warn' : ''}">${{ in: '루틴 포함', out: '루틴에 없음', skip: '루틴 제외' }[r]}</span>`}</article>`).join('');
   return `<div class="adds"><button id="add" class="primary" data-act="add">＋ 직접 등록</button>
@@ -629,7 +639,7 @@ function viewProducts() {
       + (state.products.length + state.done.length > 1 ? `<div class="sortbar"><label><span>종류</span><select id="kind"><option value="">전체</option>${kindOpts}</select></label>`
         + (filter !== 'done' ? `<label><span>정렬</span><select id="sort">${Object.entries(SORTS)
         .map(([k, n]) => `<option value="${k}" ${k === sortBy ? 'selected' : ''}>${n}</option>`).join('')}</select></label>` : '') + '</div>' : '')
-      + ((n => n && (filter === 'all' || filter === 'none') ? `<button id="fill" class="wide" data-act="fillNext">📷 기한 없는 ${n}개 하나씩 채우기</button>` : '')(rows.filter(r => !r.e).length))
+      + ((n => n && (filter === 'all' || filter === 'none') ? `<button id="fill" class="wide" data-act="fillNext">📷 기한 모르는 ${n}개 하나씩 채우기</button>` : '')(rows.filter(r => !r.k).length))
       + (cards ? cards + '<p id="noHit" class="empty" hidden>찾는 화장품이 없어요. 띄어쓰기 없이 이름 일부만 쳐 보세요.</p>' : '<p class="empty">해당하는 화장품이 없어요</p>')
     : '<div class="empty"><p><b>등록된 화장품이 없어요</b></p><p>사진으로 등록하면 AI가 이름·종류·기한을 읽어 줘요. 한 장에 여러 개를 찍어도 돼요. 뒷면(전성분·사용기한)이 보이게 찍으면 성분까지 채워요.<br>직접 등록할 땐 이름만 적어도 종류를 골라 줘요.</p></div>');
 }
@@ -651,7 +661,8 @@ function productForm(p, fresh) {              // fresh = 사진에서 읽어 미
   const more = isNew && queue.length, filling = !isNew && fill && p.id === fill.ids[fill.i];
   modal(`<form method="dialog" data-form="product" data-id="${isNew ? '' : esc(p.id)}" ${blank ? 'data-auto="1"' : ''}>
     <h2>${isNew ? '화장품 등록' : '화장품 수정'}${more ? ` <small>· 사진에서 ${queue.length}개 더</small>` : ''}${filling ? ` <small>· 기한 채우기 ${fill.i + 1}/${fill.ids.length}</small>` : ''}</h2>
-    ${isNew ? '' : (e => `<p class="muted">${badge(left(p, today()))} ${e ? `${e}까지${e === openLimit(p) ? ` (개봉 후 ${p.pao}개월)` : ''}` : '용기의 유통기한이나 개봉 후 사용기간을 넣으면 남은 날을 알려 줘요'}</p>`)(expiryOf(p))}
+    ${isNew ? '' : (e => `<p class="muted">${badge(left(p, today()), e && !knownExpiry(p))} ${e ? expiryNote(p) + (knownExpiry(p) ? '' : '. 용기의 유통기한이나 개봉 후 사용기간을 넣으면 그걸 써요')
+      : '용기의 유통기한이나 개봉 후 사용기간을 넣으면 남은 날을 알려 줘요'}</p>`)(expiryOf(p))}
     <label class="btn"><input type="file" accept="image/*" class="sr" data-pick="product">📷 ${isNew ? '사진으로 채우기 (AI)' : '뒷면 사진으로 기한·성분 채우기 (AI)'}</label>
     <p class="ai" role="status" hidden></p>
     ${fresh && state.products.some(x => x.name === p.name) ? '<p class="note">같은 이름의 화장품이 이미 등록돼 있어요.</p>' : ''}
@@ -914,7 +925,7 @@ function routineText(s, now) {
     + (p.cat === 'cleanser' && p.actives.includes('acid') ? ' (씻어 내는 제품이라 매일 써도 되고, 레티놀·각질 날엔 앱이 순한 클렌저로 바꿈)' : ''));
   const no = p => `[${s.products.indexOf(p) + 1}]`;      // 점검 답에서 제품을 가리킬 번호
   const line = p => `- ${no(p)} ${p.name} | ${CATS[p.cat][0]} | 성분: ${p.actives.map(a => ACTIVES[a]).join('·') || '없음'} | 쓰는 때: ${when(p)}`
-    + `${expired(p, now) ? ' | 기한 지남' : nearEnd(p, now) ? ` | 기한 ${left(p, now)}일 남음` : ''}${p.memo ? ` | 메모: ${p.memo.replace(/\s+/g, ' ')}` : ''}${name(p.pair) ? ` | 바로 앞에 함께 바름: ${name(p.pair)}` : ''}`;
+    + `${expired(p, now) ? ' | 기한 지남' : nearEnd(p, now) ? ` | 기한 ${left(p, now)}일 남음` : ''}${(expired(p, now) || nearEnd(p, now)) && !knownExpiry(p) ? '(종류별 보통 사용기간으로 잡은 추정)' : ''}${p.memo ? ` | 메모: ${p.memo.replace(/\s+/g, ' ')}` : ''}${name(p.pair) ? ` | 바로 앞에 함께 바름: ${name(p.pair)}` : ''}`;
   const opened = s.products.filter(p => p.opened), sealed = s.products.filter(p => !p.opened);
   const last = s.logs.filter(l => l.date <= now).sort((a, b) => b.date.localeCompare(a.date))[0];
   return [`[개봉한 제품 = 루틴 대상 ${opened.length}개]`, ...opened.map(line),
@@ -1206,8 +1217,8 @@ dlg.addEventListener('submit', async e => {
     if (rebuyFor && !f.dataset.id) { const x = state.done.find(x => x.id === rebuyFor); if (x) x.again = false; rebuyFor = null; }      // 다시 산 것을 등록했으면 재구매 목록에서 내린다
     if (!f.dataset.id && queue.length) { productForm(queue.shift(), true); toast(`‘${p.name}’ 저장했어요`); return void commit(); }      // 사진에서 읽은 다음 제품
     if (fill && f.dataset.id && f.dataset.id === fill.ids[fill.i]) {      // 기한 채우기 중이면 저장하고 다음 제품으로
-      if (expiryOf(p)) fill.done++;
-      commit(); toast(`‘${p.name}’ 저장했어요${expiryOf(p) ? ` · ${expiryOf(p)}까지` : ''}`); return fillGo(1);
+      if (knownExpiry(p)) fill.done++;
+      commit(); toast(`‘${p.name}’ 저장했어요${knownExpiry(p) ? ` · ${knownExpiry(p)}까지` : ''}`); return fillGo(1);
     }
   } else if (f.dataset.form === 'log') {
     if (f.inert) return;                      // 사진을 저장하는 사이 한 번 더 눌러도 기록이 둘 생기지 않게
@@ -1354,6 +1365,10 @@ function selfTest() {
   const so = [P({ id: 'b', name: '나', cat: 'cream', expiry: '2027-01-01' }), P({ id: 'a', name: '가', cat: 'toner' }), P({ id: 'c', name: '다', cat: 'cream', expiry: '2026-12-01' })]
     .map((p, i) => ({ p, i, e: expiryOf(p) }));
   eq(Object.keys(SORTS).map(k => sortRows(so, k).map(r => r.p.id).join('')), ['cba', 'acb', 'abc', 'cab'], '화장품 정렬: 기한(없는 건 뒤)·종류(바르는 순서)·이름·최근 등록');
+  const ge = o => cleanProduct({ name: "g", opened: true, openedAt: "2026-01-31", ...o });
+  eq([expiryOf(ge({ cat: 'toner' })), expiryOf(ge({ cat: 'eye' })), expiryOf(ge({ cat: 'serum', actives: ['vitc'] })), expiryOf(ge({ cat: 'etc' })), expiryOf(ge({ cat: 'toner', pao: 3 })),
+    expiryOf(ge({ cat: 'toner', expiry: '2026-05-01' })), expiryOf({ ...ge({ cat: 'toner' }), opened: false, openedAt: '' }), knownExpiry(ge({ cat: 'toner' })), fillOrder([ge({ id: 'a', cat: 'toner' })])],
+    ['2027-01-31', '2026-07-31', '2026-07-31', '', '2026-04-30', '2026-05-01', '', '', ['a']], '추정 기한: 개봉일 + 종류별 보통 사용기간 (적힌 기한·사용기간이 우선, 기한 채우기 대상엔 그대로 남음)');
   eq(['라곰셀업', 'AHA', '레티놀', '크림'].map(q => norm('라곰 셀업 젤 투 워터 클렌저' + sub(P({ cat: 'cleanser', actives: ['acid'] }))).includes(norm(q))),
     [true, true, false, false], '화장품 찾기: 띄어쓰기·대소문자 무시, 이름·종류·성분에서');
   const done = P({ id: 'done', cat: 'toner', actives: ['acid'] }), shelf = [done,
