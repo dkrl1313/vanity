@@ -127,7 +127,9 @@ button.what { border: 0; background: none; padding: 2px 0; min-height: 0; border
 dialog { border: 0; border-radius: 18px; padding: 20px; width: min(100vw - 24px, 480px); max-height: calc(100dvh - 24px); background: var(--card); color: var(--ink); }
 dialog::backdrop { background: rgb(0 0 0 / .5); }
 form { display: grid; gap: 14px; }
-form > label, .two label { display: grid; gap: 5px; font-size: 13px; color: var(--muted); }
+form > label, .two label, .more label { display: grid; gap: 5px; font-size: 13px; color: var(--muted); }
+.more summary { padding: 11px 0; font-size: 14px; color: var(--muted); cursor: pointer; }
+.more > div { display: grid; gap: 14px; padding-top: 4px; }
 fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 legend { padding: 0; font-size: 13px; color: var(--muted); }
 input:not([type=checkbox], [type=radio]), select, textarea { width: 100%; min-height: 44px; padding: 9px 12px; font-size: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); }
@@ -723,6 +725,7 @@ function viewSkin() {
 function productForm(p, fresh) {              // fresh = 사진에서 읽어 미리 채운 새 화장품
   const blank = !p, isNew = blank || !!fresh; p ??= cleanProduct({});
   const more = isNew && queue.length, filling = !isNew && fill && p.id === fill.ids[fill.i];
+  // 자주 안 쓰는 칸(쉬는 저녁·먼저 바를 제품)은 「자세한 설정」으로 접어 둔다 — 값이 있으면 펼친 채로. 접혀 있어도 저장에는 그대로 들어간다
   modal(`<form method="dialog" data-form="product" data-id="${isNew ? '' : esc(p.id)}" ${blank ? 'data-auto="1"' : ''}>
     <h2>${isNew ? '화장품 등록' : '화장품 수정'}${more ? ` <small>· 사진에서 ${queue.length}개 더</small>` : ''}${filling ? ` <small>· 기한 채우기 ${fill.i + 1}/${fill.ids.length}</small>` : ''}</h2>
     ${isNew ? '' : (e => `<p class="muted">${badge(left(p, today()), e && !knownExpiry(p))} ${e ? expiryNote(p) + (knownExpiry(p) ? '' : '. 용기의 유통기한이나 개봉 후 사용기간을 넣으면 그걸 써요')
@@ -734,11 +737,6 @@ function productForm(p, fresh) {              // fresh = 사진에서 읽어 미
     <label>종류 <select name="cat">${ORDER.map(k => `<option value="${k}" ${k === p.cat ? 'selected' : ''}>${CATS[k][0]}${CATS[k][1] ? '' : ' (루틴 제외)'}</option>`).join('')}</select></label>
     <label>쓰는 때 — 레티놀·각질 성분·팩은 아침만·저녁만과 상관없이 정해진 저녁에만 <select name="when">${[['', '자동 (종류·성분에 맞게)'], ['am', '아침만'], ['pm', '저녁만'], ['off', '루틴에 안 넣음 (덧바름용·잠시 쉼)']].map(([v, n]) =>
       `<option value="${v}" ${v === p.when ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
-    <label>쉬는 저녁 — 고른 저녁엔 이 제품을 빼고 같은 종류 다른 제품을 넣어요 (예: 각질 마스크 날엔 꾸덕한 밤 빼기) <select name="rest"><option value="">없음</option>${Object.entries(REST).map(([v, [n]]) =>
-      `<option value="${v}" ${v === p.rest ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
-    <label>먼저 바를 제품 — 이 제품 바로 앞에 붙여 발라요 (예: 레티놀 아이크림 앞에 일반 아이크림) <select name="pair"><option value="">없음</option>${state.products.filter(q => q.id !== p.id)
-      .sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat) || a.name.localeCompare(b.name, 'ko'))
-      .map(q => `<option value="${esc(q.id)}" ${q.id === p.pair ? 'selected' : ''}>${esc(q.name)} (${CATS[q.cat][0]})</option>`).join('')}</select></label>
     <fieldset><legend>성분 — 들어 있으면 체크해요. 루틴의 요일·시간을 나눠요 (효소 세안제·파우더 워시도 AHA·BHA·효소)</legend><div class="checks">${Object.entries(ACTIVES).map(([k, v]) =>
       `<label class="pill"><input type="checkbox" name="actives" value="${k}" ${p.actives.includes(k) ? 'checked' : ''}> ${v}</label>`).join('')}</div></fieldset>
     <label>유통기한 (용기에 적힌 날짜) <input type="date" name="expiry" value="${p.expiry}"></label>
@@ -750,6 +748,13 @@ function productForm(p, fresh) {              // fresh = 사진에서 읽어 미
     <div class="if-opened ago" role="group" aria-label="개봉일 빠르게 고르기"><small>언제쯤 뜯었어요?</small>${AGO.map(([n, d, m]) =>
       `<button type="button" class="chip" data-act="ago" data-d="${d}" data-m="${m}">${n}</button>`).join('')}</div>
     <label>메모 <textarea name="memo" rows="2" maxlength="300">${esc(p.memo)}</textarea></label>
+    <details class="more" ${p.rest || p.pair ? 'open' : ''}><summary>자세한 설정 · 쉬는 저녁, 먼저 바를 제품</summary><div>
+    <label>쉬는 저녁 — 고른 저녁엔 이 제품을 빼고 같은 종류 다른 제품을 넣어요 (예: 각질 마스크 날엔 꾸덕한 밤 빼기) <select name="rest"><option value="">없음</option>${Object.entries(REST).map(([v, [n]]) =>
+      `<option value="${v}" ${v === p.rest ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+    <label>먼저 바를 제품 — 이 제품 바로 앞에 붙여 발라요 (예: 레티놀 아이크림 앞에 일반 아이크림) <select name="pair"><option value="">없음</option>${state.products.filter(q => q.id !== p.id)
+      .sort((a, b) => ORDER.indexOf(a.cat) - ORDER.indexOf(b.cat) || a.name.localeCompare(b.name, 'ko'))
+      .map(q => `<option value="${esc(q.id)}" ${q.id === p.pair ? 'selected' : ''}>${esc(q.name)} (${CATS[q.cat][0]})</option>`).join('')}</select></label>
+    </div></details>
     ${!isNew && p.opened ? `<button type="button" data-act="finish" data-id="${esc(p.id)}">✓ 다 썼어요 · 대신 쓸 것 찾기</button>` : ''}
     <div class="actions">${isNew ? (more ? '<button type="button" data-act="skip">건너뛰기</button>' : '') : filling ? '<button type="button" data-act="fillSkip">건너뛰기</button>'
       : `<button type="button" class="danger" data-act="delProduct" data-id="${esc(p.id)}">삭제</button>`}<span class="grow"></span>
@@ -1305,7 +1310,8 @@ dlg.addEventListener('input', e => {          // 화장품 폼: 이름으로 종
   const t = e.target, f = t.form;
   if (f?.dataset.form !== 'product') return;
   const el = f.elements;
-  if (t.name === 'name' && f.dataset.auto) { const g = guess(t.value); el.cat.value = g.cat; el.rest.value = g.rest; for (const c of el.actives) c.checked = g.actives.includes(c.value); }
+  if (t.name === 'name' && f.dataset.auto) { const g = guess(t.value); el.cat.value = g.cat; el.rest.value = g.rest; for (const c of el.actives) c.checked = g.actives.includes(c.value);
+    if (g.rest) f.querySelector('.more').open = true; }      // 이름으로 쉬는 저녁을 미리 골랐으면 접힌 칸을 펼쳐 보여 준다
   // 새 등록에서 종류를 바꾸면, 이름으로 미리 골라진 쉬는 저녁(크림일 때의 추측값)은 바꾼 종류에 맞춰 다시 — 로션으로 고쳤는데 「쉼」이 남지 않게
   if (t.name === 'cat' && !f.dataset.id && el.rest.value === heavyRest(el.namedItem('name').value, 'cream')) el.rest.value = heavyRest(el.namedItem('name').value, t.value);
   if (t.name === 'cat' || t.name === 'actives' || t.name === 'rest') delete f.dataset.auto;        // 직접 고른 뒤에는 추측하지 않는다
