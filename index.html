@@ -160,8 +160,6 @@ form:has([name=opened]:not(:checked)) .if-opened { display: none; }
 form > label.btn, .btn { display: flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 10px; font-size: 15px; color: var(--ink); cursor: pointer; }
 .btn:has(:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }      /* 창이 열릴 때 자동 초점엔 안 뜨고 키보드로 옮겼을 때만 */
 .btn:has(:disabled) { opacity: .35; pointer-events: none; }
-.adds { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px; }
-.adds > * { min-height: 48px; }
 .preview { width: 100%; max-height: 46dvh; object-fit: contain; border-radius: 12px; background: var(--bg); }
 .sr, input.sr { position: absolute; width: 1px; height: 1px; min-height: 0; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); }
 
@@ -818,8 +816,7 @@ function viewProducts() {
       <small>${sub(p)} · ${p.opened ? `개봉 ${p.openedAt}` : '미개봉'}${e ? `<br>${expiryNote(p)}` : ''}</small>
       ${r === 'sealed' ? `<button id="open-${esc(p.id)}" class="chip" data-act="open" data-id="${esc(p.id)}" aria-label="${esc(p.name)} 오늘 개봉" title="눌러서 오늘 개봉으로">미개봉</button>`
         : `<span class="tag ${r === 'in' ? 'on' : r === 'out' ? 'warn' : ''}">${{ in: '루틴 포함', out: '루틴에 없음', skip: '루틴 제외' }[r]}</span>`}</article>`).join('');
-  return `<div class="adds"><button id="add" class="primary" data-act="add">＋ 직접 등록</button>
-    <label class="btn"><input type="file" accept="image/*" class="sr" data-pick="product">📷 사진으로 등록</label></div>` + (state.products.length || state.done.length
+  return `<button id="add" class="primary wide" data-act="add">＋ 직접 등록</button>` + (state.products.length || state.done.length
     ? `<input type="search" id="q" class="search" placeholder="🔍 이름·종류·성분으로 찾기" aria-label="화장품 찾기" autocomplete="off" value="${esc(query)}">`
       + `<div class="filters" role="group" aria-label="걸러 보기">${chips}</div>`
       + (kinds ? `<p class="muted kinds">${kinds}</p>` : '')
@@ -828,7 +825,7 @@ function viewProducts() {
         .map(([k, n]) => `<option value="${k}" ${k === sortBy ? 'selected' : ''}>${n}</option>`).join('')}</select></label>` : '') + '</div>' : '')
       + ((n => n && (filter === 'all' || filter === 'none') ? `<button id="fill" class="wide" data-act="fillNext">📷 기한 모르는 ${n}개 하나씩 채우기</button>` : '')(rows.filter(r => !r.k).length))
       + (cards ? cards + '<p id="noHit" class="empty" hidden>찾는 화장품이 없어요. 띄어쓰기 없이 이름 일부만 쳐 보세요.</p>' : '<p class="empty">해당하는 화장품이 없어요</p>')
-    : '<div class="empty"><p><b>등록된 화장품이 없어요</b></p><p>사진으로 등록하면 AI가 이름·종류·기한을 읽어 줘요. 한 장에 여러 개를 찍어도 돼요. 뒷면(전성분·사용기한)이 보이게 찍으면 성분까지 채워요.<br>직접 등록할 땐 이름만 적어도 종류를 골라 줘요.</p></div>');
+    : '<div class="empty"><p><b>등록된 화장품이 없어요</b></p><p>「＋ 직접 등록」에서 사진으로 채우면 AI가 이름·종류·기한을 읽어 줘요. 한 장에 여러 개를 찍어도 돼요. 뒷면(전성분·사용기한)이 보이게 찍으면 성분까지 채워요.<br>이름만 적어도 종류를 골라 줘요.</p></div>');
 }
 
 function viewSkin() {
@@ -1577,11 +1574,9 @@ const ACT = {
 };
 document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (state && b && Object.hasOwn(ACT, b.dataset.act)) ACT[b.dataset.act](b.dataset); });
 view.addEventListener('input', e => { if (e.target.id === 'q') { query = e.target.value; applySearch(); } });      // 화장품 찾기 (글자마다)
-view.addEventListener('change', e => {        // 루틴에 제품 추가 · 화장품 사진으로 등록 · 화장품 정렬
+view.addEventListener('change', e => {        // 루틴에 제품 추가 · 화장품 정렬
   if (e.target.id === 'sort') { sortBy = e.target.value; keepView(); return render(); }
   if (e.target.id === 'kind') { kindF = e.target.value; keepView(); return render(); }
-  const file = e.target.files?.[0];
-  if (file && e.target.dataset.pick === 'product') { ACT.add(); fillFromPhoto(dlg.querySelector('form'), file); e.target.value = ''; return; }
   const t = e.target.dataset.add;
   if (t && product(e.target.value)) { state.routine.days[dayIdx][t].push(e.target.value); manual(); }
 });
@@ -1610,7 +1605,7 @@ dlg.addEventListener('change', async e => {   // 사진·백업 파일 고르기
   }
   if (!file) return;
   if (t.dataset.pick === 'backup') importFile(file);
-  if (t.dataset.pick === 'product') fillFromPhoto(t.form, file);
+  if (t.dataset.pick === 'product') { fillFromPhoto(t.form, file); t.value = ''; }      // 못 읽었을 때 같은 사진을 다시 고를 수 있게
   if (t.dataset.pick === 'photo') {
     const form = t.form, ok = form.querySelector('.primary'), img = form.querySelector('.preview');
     ok.disabled = true;                       // 줄이는 동안 저장되면 사진이 빠진다
