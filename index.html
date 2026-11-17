@@ -225,8 +225,8 @@ function addMonths(s, n) {                    // 1/31 + 1개월 = 2월 말일 (�
 const openLimit = p => (p.opened && p.openedAt && p.pao ? addMonths(p.openedAt, p.pao) : '');
 const knownExpiry = p => [p.expiry, openLimit(p)].filter(Boolean).sort()[0] || '';   // 적힌 기한과 개봉 기한 중 빠른 쪽
 // 기한·사용기간을 모르는 개봉 제품은 개봉일 + 종류별 보통 사용기간으로 대략 잡는다 (화면엔 「추정」, 적으면 그쪽을 쓴다)
-// ponytail: 종류·성분만 본다. 비타민C·레티놀은 빨리 변해서 6개월. 기타는 무엇인지 몰라 잡지 않음
-const guessPao = p => p.cat === 'etc' ? 0 : p.actives.some(a => a === 'retinol' || a === 'vitc') ? 6 : { eye: 6, faceoil: 6 }[p.cat] ?? 12;
+// ponytail: 종류·성분만 본다. 비타민C·레티놀은 빨리 변해서 6개월. 루틴에 안 넣는 종류(메이크업·바디·기타)는 제품마다 너무 달라 잡지 않음
+const guessPao = p => !CATS[p.cat][1] ? 0 : p.actives.some(a => a === 'retinol' || a === 'vitc') ? 6 : { eye: 6, faceoil: 6 }[p.cat] ?? 12;
 const guessed = p => (!knownExpiry(p) && p.opened && p.openedAt && guessPao(p) ? addMonths(p.openedAt, guessPao(p)) : '');
 const expiryOf = p => knownExpiry(p) || guessed(p);
 const left = (p, now) => (expiryOf(p) ? daysBetween(now, expiryOf(p)) : null);    // 남은 날 (기한 없으면 null)
@@ -243,8 +243,11 @@ const clash = (p, t) => p?.when === 'off' || (!!p?.when && group(p) === 'daily' 
 const acidic = p => p.actives.includes('acid');      // 각질 성분(산·효소)이 든 제품
 const nearEnd = (p, now) => (left(p, now) ?? Infinity) <= SOON;      // 기한 임박 (지난 것은 루틴 대상이 아니라 따로 뺀다)
 const slotOf = p => ['retinol', 'acid'].includes(group(p)) ? group(p) : p.cat;      // 같은 자리를 나눠 쓰는 묶음 — 레티놀·각질 성분은 종류가 달라도 한 저녁에 하나
+// 임박한 것을 먼저 쓰는 규칙은 그 주 월요일 기준으로 정한다 — 주중에 30일 안으로 들어와도 이미 지난 요일의 루틴·발랐어요 체크가 바뀌지 않게 (다음 주부터)
+const monday = now => addDays(now, -dow(now));
+const rush = (p, now) => nearEnd(p, monday(now));
 // 같은 자리 묶음에 기한 임박한 다른 제품이 있어서 쉬는 제품 (임박한 것을 먼저 매일 쓴다)
-const waiting = (p, products, now) => !nearEnd(p, now) && products.some(q => q !== p && q.opened && q.when !== 'off' && !expired(q, now) && nearEnd(q, now) && slotOf(q) === slotOf(p));
+const waiting = (p, products, now) => !rush(p, now) && products.some(q => q !== p && q.opened && q.when !== 'off' && !expired(q, now) && rush(q, now) && slotOf(q) === slotOf(p));
 const vitcAm = p => !p.when && p.actives.includes('vitc') && p.cat !== 'cleanser' && CATS[p.cat][1] === 'both';      // 바르는 비타민C는 아침으로 (쓰는 때를 직접 고르면 그쪽)
 // 환절기 3~5·9~11월 · 여름 6~8월 · 겨울 12~2월
 const seasonOf = now => { const m = +now.slice(5, 7); return m >= 6 && m <= 8 ? 'summer' : m >= 3 && m <= 11 ? 'change' : 'winter'; };
@@ -267,10 +270,10 @@ function generate(products, calm, now, rules = []) {
   const usable = products.filter(p => p.opened && !expired(p, now) && p.when !== 'off')
     .sort((a, b) => (expiryOf(a) || '9').localeCompare(expiryOf(b) || '9'));      // 기한 임박한 것부터
   // 같은 자리 제품은 차례로 돌려 쓰고, 그 차례의 시작을 주마다 한 칸씩 민다 — 자리보다 제품이 많을 때 늘 같은 것만 밀리지 않게 (11-17 아누아 마스크가 매주 빠짐)
-  const week = Math.floor(daysBetween(WEEK0, addDays(now, -dow(now))) / 7);
+  const week = Math.floor(daysBetween(WEEK0, monday(now)) / 7);
   const turn = {}, next = (key, pool) => pool[(((turn[key] = (turn[key] ?? -1) + 1) + week) % pool.length + pool.length) % pool.length], byId = new Map(usable.map(p => [p.id, p]));
   // 기한 임박한 제품이 있으면 그 자리는 임박한 것끼리만 돌려 쓴다 — 나머지는 쉬고, 버리기 전에 다 쓰게
-  const urgent = pool => { const u = pool.filter(p => nearEnd(p, now)); return u.length ? u : pool; };
+  const urgent = pool => { const u = pool.filter(p => rush(p, now)); return u.length ? u : pool; };
   return DAYS.map((_, d) => {
     const day = {};
     // 레티놀·각질 제품을 쓰는 날 — 그날은 아침·저녁 모두 각질 성분(산·효소) 클렌저를 피한다
@@ -292,7 +295,7 @@ function generate(products, calm, now, rules = []) {
         let fit = usable.filter(p => p.cat === cat && ok(p));
         // 여름·지성·수부지 아침엔 로션까지만 — 로션이 들어갔으면 크림·페이스오일은 저녁에. 아침만으로 직접 고른 것은 그대로
         if (amLight && t === 'am' && (cat === 'cream' || cat === 'faceoil') && day[t].some(id => byId.get(id).cat === 'lotion'))
-          fit = fit.filter(p => p.when === 'am');
+          fit = fit.filter(p => p.when === 'am' || vitcAm(p));      // 비타민C 크림은 아침에만 쓰는 규칙이라 여기서 빼면 어디에도 못 들어간다 → 아침 그대로
         // 레티놀·각질 날엔 각질 성분 없는 클렌저·클렌징오일로 — 자극이 겹치지 않게. 피부 보호 규칙이라 쓰는 때(아침만·저녁만)보다 우선, 순한 것이 없으면 그대로
         let swap = '';
         if ((cat === 'cleanser' || cat === 'oil') && activeDay && fit.some(acidic)) {
@@ -424,7 +427,7 @@ function cleanProduct(p) {
 function cleanDone(x) {                      // 다 쓴 제품 기록: 이름·종류·성분·쓰는 때(다시 등록할 때 채움), 개봉일·다 쓴 날, 또 살래요
   x = x && typeof x === 'object' ? x : {};
   return { id: text(x.id, 40) || uid(), name: text(x.name, 80), cat: typeof x.cat === 'string' && Object.hasOwn(CATS, x.cat) ? x.cat : 'etc',
-    actives: Object.keys(ACTIVES).filter(a => Array.isArray(x.actives) && x.actives.includes(a)), when: ['am', 'pm'].includes(x.when) ? x.when : '',
+    actives: Object.keys(ACTIVES).filter(a => Array.isArray(x.actives) && x.actives.includes(a)), when: ['am', 'pm', 'off'].includes(x.when) ? x.when : '',
     openedAt: date(x.openedAt), doneAt: date(x.doneAt) || today(), again: !!x.again };
 }
 function cleanLog(l) {
@@ -496,6 +499,7 @@ const fail = e => toast(`저장하지 못했어요. 저장 공간이나 브라�
 // 다른 창(홈 화면 앱·브라우저 탭·화면 분할)이 저장하면 알린다 — 오래된 창이 새 기록을 덮어쓰지 않게 (받는 쪽은 reload)
 const bc = 'BroadcastChannel' in window ? new BroadcastChannel('vanity') : null;
 let seen;                                     // 이 창이 마지막으로 저장소와 맞춘 내용 — 저장소가 그대로면 reload 는 다시 그리지 않는다
+// ponytail: 저장할 때마다 state 를 통째로 글로 한 번 더 만든다(썸네일 포함). 피부 기록이 수백 건이라 느려지면 저장소에 번호(rev) 칸을 따로 두고 그것만 비교할 것
 const save = () => {
   if (noSave) return Promise.resolve(false);
   const s = JSON.stringify(state);
@@ -635,7 +639,7 @@ function viewProducts() {
   if (filter === 'done' && !state.done.length) filter = 'all';
   const now = today(), inWeek = new Set(state.routine.days.flatMap(d => [...d.am, ...d.pm]));
   // 루틴 상태: sealed 미개봉 · skip 루틴에 안 넣는 종류 · in 이번 주 루틴에 있음 · out 개봉했는데 없음(만료·자리 부족·예민한 주·직접 고친 루틴)
-  const rows = state.products.map((p, i) => ({ p, i, l: left(p, now), e: expiryOf(p), k: knownExpiry(p), r: !p.opened ? 'sealed' : !CATS[p.cat][1] || p.when === 'off' ? 'skip' : inWeek.has(p.id) ? 'in' : 'out' }));
+  const rows = state.products.map((p, i) => ({ p, i, l: left(p, now), e: expiryOf(p), k: knownExpiry(p), r: !p.opened ? 'sealed' : inWeek.has(p.id) ? 'in' : !CATS[p.cat][1] || p.when === 'off' ? 'skip' : 'out' }));      // 직접 고친 루틴에 손으로 넣은 것은 종류·쓰는 때와 상관없이 「루틴 포함」
   // 종류 걸러 보기: 위 상태 칩과 함께 쓴다 (칩 숫자도 그 종류 안에서). 고른 종류가 다 지워졌으면 푼다
   if (kindF && !state.products.some(p => p.cat === kindF) && !state.done.some(x => x.cat === kindF)) kindF = '';
   const shown = kindF ? rows.filter(r => r.p.cat === kindF) : rows, done = state.done.filter(x => !kindF || x.cat === kindF);
@@ -961,6 +965,7 @@ function cleanCheck(r) {                      // AI 답도 정해진 칸·길이
 // 점검에 보낼 글: 제품(개봉 = 루틴 대상)·이번 주 루틴·가장 최근 피부 상태 태그 (사진·피부 메모는 안 보낸다)
 function routineText(s, now) {
   const name = id => s.products.find(p => p.id === id)?.name ?? '';
+  const pairName = p => { const q = s.products.find(q => q.id === p.pair); return q && q.when !== 'off' ? q.name : ''; };      // 루틴에 안 넣는 제품은 붙지 않으니 적지 않는다
   // 쓰는 때는 실제로 쓰이는 때로 적는다 — 「자동」이라고만 적으면 AI가 각질 패드를 아무 때나 쓰는 줄 알고 「저녁만으로 바꾸라」고 되풀이했다 (11-16 실측)
   const n = nightsOf(rulesOf(s, now)), on = g => n[g].map(d => DAYS[d]).join('·');      // 계절·피부 타입에 맞춘 요일
   const FIXED = { retinol: `레티놀 날 저녁(${on('retinol')}) 고정`, acid: `각질 날 저녁(${on('acid')}) 고정`, pack: `팩 날 저녁(${on('pack')}) 고정` };
@@ -968,7 +973,7 @@ function routineText(s, now) {
     + (p.cat === 'cleanser' && p.actives.includes('acid') ? ' (씻어 내는 제품이라 매일 써도 되고, 레티놀·각질 날엔 앱이 순한 클렌저로 바꿈)' : ''));
   const no = p => `[${s.products.indexOf(p) + 1}]`;      // 점검 답에서 제품을 가리킬 번호
   const line = p => `- ${no(p)} ${p.name} | ${CATS[p.cat][0]} | 성분: ${p.actives.map(a => ACTIVES[a]).join('·') || '없음'} | 쓰는 때: ${when(p)}`
-    + `${expired(p, now) ? ' | 기한 지남' : nearEnd(p, now) ? ` | 기한 ${left(p, now)}일 남음` : ''}${(expired(p, now) || nearEnd(p, now)) && !knownExpiry(p) ? '(종류별 보통 사용기간으로 잡은 추정)' : ''}${p.memo ? ` | 메모: ${p.memo.replace(/\s+/g, ' ')}` : ''}${name(p.pair) ? ` | 바로 앞에 함께 바름: ${name(p.pair)}` : ''}`;
+    + `${expired(p, now) ? ' | 기한 지남' : nearEnd(p, now) ? ` | 기한 ${left(p, now)}일 남음` : ''}${(expired(p, now) || nearEnd(p, now)) && !knownExpiry(p) ? '(종류별 보통 사용기간으로 잡은 추정)' : ''}${p.memo ? ` | 메모: ${p.memo.replace(/\s+/g, ' ')}` : ''}${pairName(p) ? ` | 바로 앞에 함께 바름: ${pairName(p)}` : ''}`;
   const opened = s.products.filter(p => p.opened), sealed = s.products.filter(p => !p.opened);
   const last = s.logs.filter(l => l.date <= now).sort((a, b) => b.date.localeCompare(a.date))[0];
   return [`[개봉한 제품 = 루틴 대상 ${opened.length}개]`, ...opened.map(line),
@@ -1122,7 +1127,8 @@ async function fillFromPhoto(form, file) {
 
 /* ───────── 동작 ───────── */
 // 점검 창의 적용 버튼을 「적용됨」으로 바꾼다 (같은 제품을 가리킨 버튼 모두)
-const applied = (act, id, label) => { for (const b of dlg.querySelectorAll(`[data-act="${act}"][data-id="${CSS.escape(id)}"]`)) { b.disabled = true; b.textContent = label; } };
+// d = 누른 버튼의 값. 제품뿐 아니라 메모 글·쓰는 때까지 같은 버튼만 — 한 제품에 다른 메모 제안이 둘이면 누르지 않은 쪽은 그대로 둔다
+const applied = (d, label) => { for (const b of dlg.querySelectorAll(`[data-act="${d.act}"]`)) if (['id', 'memo', 'when'].every(k => b.dataset[k] === d[k])) { b.disabled = true; b.textContent = label; } };
 const ACT = {
   tab(d) { tab = d.tab; editing = false; render(); scrollTo(0, 0); },
   day(d) { dayIdx = +d.i; render(); },
@@ -1178,12 +1184,12 @@ const ACT = {
   applyMemo(d) {                              // AI 점검 제안 → 제품 메모에 덧붙인다 (루틴에 📝로 보인다)
     const p = product(d.id); if (!p || !d.memo) return;
     p.memo = text(p.memo ? `${p.memo} / ${d.memo}` : d.memo, 300); commit();
-    applied('applyMemo', d.id, '✓ 메모에 넣었어요'); toast(`‘${p.name}’ 메모에 넣었어요`);
+    applied(d, '✓ 메모에 넣었어요'); toast(`‘${p.name}’ 메모에 넣었어요`);
   },
   applyWhen(d) {                              // AI 점검 제안 → 쓰는 때 바꾸기
     const p = product(d.id); if (!p || !['am', 'pm'].includes(d.when)) return;
     p.when = d.when; dropClash(p); commit();
-    applied('applyWhen', d.id, `✓ ${d.when === 'am' ? '아침만' : '저녁만'}으로 바꿨어요`); toast(`‘${p.name}’을(를) ${d.when === 'am' ? '아침만' : '저녁만'}으로 바꿨어요`);
+    applied(d, `✓ ${d.when === 'am' ? '아침만' : '저녁만'}으로 바꿨어요`); toast(`‘${p.name}’을(를) ${d.when === 'am' ? '아침만' : '저녁만'}으로 바꿨어요`);
   },
   swap(d) {                                   // 다 쓴 제품을 목록·루틴에서 빼고, 고른 제품이 있으면 오늘 개봉 (직접 고친 루틴은 같은 자리에 바꿔 넣는다)
     const p = product(d.id), q = d.to ? product(d.to) : null; if (!p) return;
@@ -1366,6 +1372,17 @@ function selfTest() {
   const mx = [P({ id: 's1', cat: 'mask' }), P({ id: 's2', cat: 'mask' }), P({ id: 'ra', cat: 'mask', actives: ['retinol'] }), P({ id: 'ac', cat: 'mask', actives: ['acid'] })];
   eq(['2026-11-16', '2026-11-23', '2026-11-30'].map(d => generate(mx, false, d).flatMap((x, i) => [3, 6].includes(i) ? x.pm : []).sort().join()),
     ['s1,s2', 's1,s2', 's1,s2'], '팩 마스크는 레티놀·각질 마스크와 순번을 따로 세서 매주 둘 다');
+  // 11-17 독립 검토에서 나온 것
+  const vcc = generate([P({ id: 'lo', cat: 'lotion' }), P({ id: 'vc', cat: 'cream', actives: ['vitc'] }), P({ id: 'cr', cat: 'cream' }), P({ id: 'su', cat: 'sun' })], false, '2026-11-16', [SKINS.oily]);
+  eq([vcc[0].am, vcc.every(d => !d.am.includes('cr') && d.pm.includes('cr'))], [['lo', 'vc', 'su'], true], '아침 로션까지만이어도 비타민C 크림은 아침 그대로 (빼면 어디에도 못 들어감)');
+  const rw = [P({ id: 'A', cat: 'cream', expiry: '2026-12-18' }), P({ id: 'B', cat: 'cream', expiry: '2028-01-01' })], rwS = d => ({ products: rw, logs: [], routine: { manual: false, days: generate(rw, false, d) } });
+  eq([generate(rw, false, '2026-11-17')[1].am, generate(rw, false, '2026-11-18')[1].am, missing(rwS('2026-11-18'), '2026-11-18', true).length,
+    generate(rw, false, '2026-11-23').map(d => d.am.join()).join(''), missing(rwS('2026-11-23'), '2026-11-23', true).map(p => p.id)],
+    [['B'], ['B'], 0, 'AAAAAAA', ['B']], '주중에 30일 안으로 들어와도 그 주 루틴은 그대로, 다음 주 월요일부터 먼저 쓴다');
+  eq([cleanDone({ name: 'x', when: 'off' }).when, expiryOf(P({ cat: 'makeup', openedAt: '2026-01-31' })), expiryOf(P({ cat: 'body', openedAt: '2026-01-31' }))], ['off', '', ''],
+    '다 쓴 기록에 루틴에 안 넣음이 남고, 메이크업·바디는 추정 기한을 잡지 않음');
+  const po = routineText({ products: [P({ id: 'a', name: '크림A', cat: 'cream', pair: 'b' }), P({ id: 'b', name: '스틱B', cat: 'sun', when: 'off' })], logs: [], routine: { manual: false, days: DAYS.map(() => ({ am: [], pm: [] })) } }, '2026-11-16');
+  ok(!po.includes('함께 바름') && po.includes('스틱B | 선크림 | 성분: 없음 | 쓰는 때: 루틴에 안 넣음'), 'AI 점검 글: 루틴에 안 넣는 제품은 함께 바름으로 적지 않음');
   const off = [P({ id: 'st', cat: 'sun', when: 'off' }), P({ id: 'cr', cat: 'sun' }), P({ id: 'to', cat: 'toner' }), P({ id: 'es', cat: 'essence' }), P({ id: 'mk', cat: 'mask' })];
   const og = generate(off, false, '2026-11-16'), offS = { products: off, logs: [], routine: { manual: false, days: og } };
   eq([og.every(d => d.am.at(-1) === 'cr'), og[3].pm, missing(offS, '2026-11-16').map(p => p.id), gaps([off[0]], '2026-11-16').length, cleanProduct({ name: 'x', when: 'off' }).when, sub(off[0]), clash(off[0], 'am')],
