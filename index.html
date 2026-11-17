@@ -403,8 +403,12 @@ const CAT_HINTS = [
   ['serum', /세럼|앰플|serum|ampoule/i],
   ['lotion', /로션|에멀[전젼]|lotion/i],
   ['faceoil', /오일|oil/i],
-  ['cream', /크림|밤|젤|cream/i],
+  ['cream', /크림|밤|젤|포마드|연고|바세린|바셀린|버터|cream|balm|pomade|ointment/i],
 ];
+// 꾸덕하게 덮는 제형(밤·포마드·연고…)의 크림은 각질 성분을 쓰는 저녁엔 쉬도록 미리 골라 둔다 — 틀리면 폼에서 「없음」으로
+// 크림 종류일 때만(클렌징 밤·립밤·아이 밤은 다른 종류로 잡힌다). 「밤」은 낱말일 때만 — 밤부(대나무)·굿밤 크림은 아님
+const HEAVY = /포마드|연고|바세린|바셀린|버터|(^|\s)밤(\s|$)|\S밤$|\bbalm\b|pomade|ointment/i;
+const heavyRest = (name, cat) => (cat === 'cream' && HEAVY.test(name.trim()) ? 'acid' : '');
 const ACTIVE_HINTS = {
   retinol: /레티놀|레티날|레티닐|retin/i,
   acid: /\b(aha|bha|pha|lha)\b|살리실|글리콜|필링|각질|효소|엔자임|enzyme|파우더\s*워시/i,
@@ -412,7 +416,8 @@ const ACTIVE_HINTS = {
 };
 function guess(name) {                        // 종류를 못 찾았어도 성분이 보이면 세럼으로
   const actives = Object.keys(ACTIVE_HINTS).filter(a => ACTIVE_HINTS[a].test(name));
-  return { cat: CAT_HINTS.find(([, re]) => re.test(name))?.[0] ?? (actives.length ? 'serum' : 'etc'), actives };
+  const cat = CAT_HINTS.find(([, re]) => re.test(name))?.[0] ?? (actives.length ? 'serum' : 'etc');
+  return { cat, actives, rest: heavyRest(name, cat) };
 }
 
 /* ───────── 데이터 정리 (폼 저장·백업 가져오기 공통 — 모르는 값은 버린다) ───────── */
@@ -779,6 +784,9 @@ async function checkForm() {                  // AI 루틴 점검 결과 창 (�
         !p.when || group(q) !== 'daily' ? ''
           : q.when !== p.when ? `<button type="button" data-act="applyWhen" data-id="${esc(q.id)}" data-when="${p.when}">${p.when === 'am' ? '아침만으로' : '저녁만으로'}</button>`
           : `<small>✓ 이미 ${p.when === 'am' ? '아침만' : '저녁만'}으로 되어 있어요</small>`,      // 이미 된 것을 다시 권하면 버튼 대신 알려 준다
+        !p.rest || group(q) !== 'daily' ? ''
+          : q.rest !== p.rest ? `<button type="button" data-act="applyRest" data-id="${esc(q.id)}" data-rest="${p.rest}">${REST[p.rest][0]}엔 쉬기</button>`
+          : `<small>✓ 이미 ${REST[p.rest][0]}엔 쉬게 되어 있어요</small>`,
       ].join('');
       // 조정인데 AI 가 메모 글·쓰는 때를 비워 보냈으면, 그 제품을 열어 직접 고치게 한다 (이 점검 창은 닫힌다)
       if (q && !acts && p.kind === '조정') acts = `<button type="button" data-act="editProduct" data-id="${esc(q.id)}">✏️ ${esc(q.name)} 열어 고치기</button>`;
@@ -965,16 +973,16 @@ ${APP_RULES}
 루틴에 실제로 보이는 것만 짚고, 위 규칙 때문에 이미 해결된 것은 말하지 않아요.
 - summary: 한국어 두 문장 이내로 전체 인상.
 - points: 최대 6개. kind 는 좋음(잘하고 있는 점) · 조정(앱 설정으로 바꾸면 좋은 점) · 주의(성분 겹침·자극처럼 조심할 점). 조정은 detail 에 앱에서 무엇을 어떻게 바꾸면 되는지(예: "○○의 쓰는 때를 저녁만으로") 적어요. 제품 이름은 목록에 있는 그대로 써요. title 은 20자 안팎, detail 은 세 문장 이내.
-- 각 point 의 product: 한 제품에 관한 항목이면 제품 목록 줄 앞의 [번호] 숫자, 아니면 0. memo: 그 제품 메모에 적어 두면 좋은 바르는 법을 30자 안팎으로(없으면 ""). when: 그 제품의 쓰는 때를 바꾸자는 제안이면 am(아침만)·pm(저녁만), 아니면 "" — 레티놀·각질·팩 제품엔 넣지 않아요. 앱이 이 칸들로 버튼을 만들어 바로 적용해요.
-- 조정 항목은 product 번호를 꼭 고르고 when·memo 중 맞는 것을 꼭 채워요(글로만 설명하면 버튼이 안 생겨요). 메모를 권하면 memo 칸에 적을 글 자체를 넣어요(예: "콩알만큼 덜어 바르기"). 이미 그 쓰는 때로 되어 있는 제품엔 같은 쓰는 때를 권하지 않아요.
+- 각 point 의 product: 한 제품에 관한 항목이면 제품 목록 줄 앞의 [번호] 숫자, 아니면 0. memo: 그 제품 메모에 적어 두면 좋은 바르는 법을 30자 안팎으로(없으면 ""). when: 그 제품의 쓰는 때를 바꾸자는 제안이면 am(아침만)·pm(저녁만), 아니면 "" — 레티놀·각질·팩 제품엔 넣지 않아요. rest: 그 제품을 특정 저녁엔 빼자는 제안이면 acid(각질 성분 쓰는 저녁)·retinol(레티놀 쓰는 저녁)·active(둘 다), 아니면 "" — 밤·포마드·연고처럼 꾸덕하게 덮는 제품을 각질 마스크·패드를 쓰는 저녁에 겹쳐 바르게 될 때 같은 경우예요. 레티놀·각질·팩 제품 자신과 이미 그렇게 설정된 제품엔 넣지 않아요. 앱이 이 칸들로 버튼을 만들어 바로 적용해요.
+- 조정 항목은 product 번호를 꼭 고르고 when·memo·rest 중 맞는 것을 꼭 채워요(글로만 설명하면 버튼이 안 생겨요). 메모를 권하면 memo 칸에 적을 글 자체를 넣어요(예: "콩알만큼 덜어 바르기"). 이미 그 쓰는 때로 되어 있는 제품엔 같은 쓰는 때를 권하지 않아요.
 - 특정 브랜드 제품을 사라고 하지 않아요. 병명을 말하지 않고, 걱정되는 증상이면 피부과 상담을 권해요.`;
 const CHECK_KINDS = { 좋음: 'on', 조정: 'warn', 주의: 'bad' };      // 점검 항목 종류 → 표시 색
 const CHECK_SCHEMA = {
   type: 'object',
   properties: { summary: { type: 'string' }, points: { type: 'array', maxItems: 6, items: {
     type: 'object', properties: { kind: { type: 'string', enum: Object.keys(CHECK_KINDS) }, title: { type: 'string' }, detail: { type: 'string' },
-      product: { type: 'integer' }, memo: { type: 'string' }, when: { type: 'string', enum: ['', 'am', 'pm'] } },
-    required: ['kind', 'title', 'detail', 'product', 'memo', 'when'], additionalProperties: false,
+      product: { type: 'integer' }, memo: { type: 'string' }, when: { type: 'string', enum: ['', 'am', 'pm'] }, rest: { type: 'string', enum: ['', ...Object.keys(REST)] } },
+    required: ['kind', 'title', 'detail', 'product', 'memo', 'when', 'rest'], additionalProperties: false,
   } } },
   required: ['summary', 'points'], additionalProperties: false,
 };
@@ -982,7 +990,8 @@ function cleanCheck(r) {                      // AI 답도 정해진 칸·길이
   const line = (v, max) => text(typeof v === 'string' ? v.replace(/\s+/g, ' ') : '', max);
   return { summary: line(r?.summary, 300),
     points: (Array.isArray(r?.points) ? r.points : []).filter(p => Object.hasOwn(CHECK_KINDS, p?.kind)).slice(0, 6)
-      .map(p => ({ kind: p.kind, title: line(p.title, 60), detail: line(p.detail, 400), product: Number.isInteger(p.product) && p.product > 0 ? p.product : 0, memo: line(p.memo, 100), when: ['am', 'pm'].includes(p.when) ? p.when : '' }))
+      .map(p => ({ kind: p.kind, title: line(p.title, 60), detail: line(p.detail, 400), product: Number.isInteger(p.product) && p.product > 0 ? p.product : 0, memo: line(p.memo, 100), when: ['am', 'pm'].includes(p.when) ? p.when : '',
+        rest: Object.hasOwn(REST, p.rest) ? p.rest : '' }))
       .filter(p => p.title || p.detail) };
 }
 // 점검에 보낼 글: 제품(개봉 = 루틴 대상)·이번 주 루틴·가장 최근 피부 상태 태그 (사진·피부 메모는 안 보낸다)
@@ -1012,8 +1021,9 @@ const shareText = (s, now) => `「화장대」 앱에서 복사한 내 화장품
 function cleanItems(r) {                      // AI 가 읽은 화장품도 믿지 않고 정해진 값만 (개봉은 사용자가 고른다)
   return (Array.isArray(r?.items) ? r.items : []).slice(0, 30).map(x => {
     const name = typeof x?.name === 'string' ? x.name.replace(/\s+/g, ' ') : '';
-    // 이름에 성분 단어가 있는데 AI 가 빠뜨렸으면 이름 추측으로 채운다
-    return cleanProduct({ name, cat: x?.cat, actives: [...(Array.isArray(x?.actives) ? x.actives : []), ...guess(name).actives], expiry: x?.expiry, pao: x?.pao });
+    // 이름에 성분 단어가 있는데 AI 가 빠뜨렸으면 이름 추측으로 채운다. 쉬는 저녁은 AI 가 읽은 종류가 크림일 때 이름으로 미리 고른다
+    const p = cleanProduct({ name, cat: x?.cat, actives: [...(Array.isArray(x?.actives) ? x.actives : []), ...guess(name).actives], expiry: x?.expiry, pao: x?.pao });
+    return { ...p, rest: heavyRest(p.name, p.cat) };
   }).filter(p => p.name);
 }
 const jpeg = photo => ({ inlineData: { mimeType: 'image/jpeg', data: photo.slice(photo.indexOf(',') + 1) } });
@@ -1138,7 +1148,7 @@ async function fillFromPhoto(form, file) {
     const it = items[0], cur = readProduct(form), editing = !!form.dataset.id;
     if (!editing) queue = [...items.slice(1), ...queue];  // 앞 사진에서 남아 있던 제품은 뒤에 그대로
     productForm({ ...cur, name: cur.name || it.name, cat: cur.cat !== 'etc' && (editing || cur.name) ? cur.cat : it.cat !== 'etc' ? it.cat : cur.cat, actives: [...cur.actives, ...it.actives],
-      expiry: it.expiry || cur.expiry, pao: it.pao || cur.pao }, !editing);
+      expiry: it.expiry || cur.expiry, pao: it.pao || cur.pao, rest: cur.rest || (editing ? '' : it.rest) }, !editing);      // 쉬는 저녁 미리 고르기는 새 등록일 때만
     const found = [it.expiry && `유통기한 ${it.expiry}`, it.pao && `개봉 후 ${it.pao}개월`, it.actives.length && `성분 ${it.actives.map(a => ACTIVES[a]).join('·')}`].filter(Boolean);
     const o = dlg.querySelector('.ai');
     o.hidden = false;
@@ -1153,7 +1163,7 @@ async function fillFromPhoto(form, file) {
 /* ───────── 동작 ───────── */
 // 점검 창의 적용 버튼을 「적용됨」으로 바꾼다 (같은 제품을 가리킨 버튼 모두)
 // d = 누른 버튼의 값. 제품뿐 아니라 메모 글·쓰는 때까지 같은 버튼만 — 한 제품에 다른 메모 제안이 둘이면 누르지 않은 쪽은 그대로 둔다
-const applied = (d, label) => { for (const b of dlg.querySelectorAll(`[data-act="${d.act}"]`)) if (['id', 'memo', 'when'].every(k => b.dataset[k] === d[k])) { b.disabled = true; b.textContent = label; } };
+const applied = (d, label) => { for (const b of dlg.querySelectorAll(`[data-act="${d.act}"]`)) if (['id', 'memo', 'when', 'rest'].every(k => b.dataset[k] === d[k])) { b.disabled = true; b.textContent = label; } };
 const ACT = {
   tab(d) { tab = d.tab; editing = false; render(); scrollTo(0, 0); },
   day(d) { dayIdx = +d.i; render(); },
@@ -1229,6 +1239,11 @@ const ACT = {
     p.when = d.when; dropClash(p); commit();
     applied(d, `✓ ${d.when === 'am' ? '아침만' : '저녁만'}으로 바꿨어요`); toast(`‘${p.name}’을(를) ${d.when === 'am' ? '아침만' : '저녁만'}으로 바꿨어요`);
   },
+  applyRest(d) {                              // AI 점검 제안 → 쉬는 저녁 고르기
+    const p = product(d.id); if (!p || !Object.hasOwn(REST, d.rest)) return;
+    p.rest = d.rest; commit();
+    applied(d, `✓ ${REST[d.rest][0]}엔 쉬게 했어요`); toast(`‘${p.name}’을(를) ${REST[d.rest][0]}엔 쉬게 했어요`);
+  },
   swap(d) {                                   // 다 쓴 제품을 목록·루틴에서 빼고, 고른 제품이 있으면 오늘 개봉 (직접 고친 루틴은 같은 자리에 바꿔 넣는다)
     const p = product(d.id), q = d.to ? product(d.to) : null; if (!p) return;
     const again = !!dlg.querySelector('[name=again]')?.checked;      // 다 쓴 제품 기록에 남긴다 (화장품 목록 「다 쓴 제품」)
@@ -1281,8 +1296,8 @@ dlg.addEventListener('input', e => {          // 화장품 폼: 이름으로 종
   const t = e.target, f = t.form;
   if (f?.dataset.form !== 'product') return;
   const el = f.elements;
-  if (t.name === 'name' && f.dataset.auto) { const g = guess(t.value); el.cat.value = g.cat; for (const c of el.actives) c.checked = g.actives.includes(c.value); }
-  if (t.name === 'cat' || t.name === 'actives') delete f.dataset.auto;        // 직접 고른 뒤에는 추측하지 않는다
+  if (t.name === 'name' && f.dataset.auto) { const g = guess(t.value); el.cat.value = g.cat; el.rest.value = g.rest; for (const c of el.actives) c.checked = g.actives.includes(c.value); }
+  if (t.name === 'cat' || t.name === 'actives' || t.name === 'rest') delete f.dataset.auto;        // 직접 고른 뒤에는 추측하지 않는다
   if (t.name === 'opened' && el.opened.checked && !el.openedAt.value) el.openedAt.value = today();
   if (t.name === 'opened' && !el.opened.checked && el.openedAt.value > today()) el.openedAt.value = '';      // 숨겨진 칸에 미래 날짜가 남으면 저장이 말없이 막힌다
 });
@@ -1379,7 +1394,11 @@ function selfTest() {
     ['일리윤 바디로션', 'body', []], ['라네즈 워터 슬리핑 마스크', 'sleep', []], ['Alpha 수분 크림', 'cream', []], ['모르는 것', 'etc', []],
     ['아이오페 임팩트 세럼', 'serum', []], ['레티놀 0.3', 'serum', ['retinol']], ['클리오 킬커버 팩트', 'makeup', []], ['메디힐 모델링 팩', 'mask', []],
     ['구달 청귤 비타C 잡티 케어 세럼', 'serum', ['vitc']],
-  ]) eq(guess(name), { cat, actives: act }, `이름 추측: ${name}`);
+  ]) eq((g => ({ cat: g.cat, actives: g.actives }))(guess(name)), { cat, actives: act }, `이름 추측: ${name}`);
+  eq(['바이오더마 시카비오 포마드', '아토베리어365 밤', '시카밤', '멜팅 밤 크림', '시어버터 크림', '밤부 수분 크림', '굿밤 나이트 크림', '에스트라 아토베리어365 크림', '클렌징 밤', '립밤', '아이 밤', '바디 버터']
+    .map(n => (g => g.cat + ':' + g.rest)(guess(n))),
+    ['cream:acid', 'cream:acid', 'cream:acid', 'cream:acid', 'cream:acid', 'cream:', 'cream:', 'cream:', 'oil:', 'makeup:', 'eye:', 'body:'],
+    '이름 추측: 꾸덕한 크림(포마드·밤·버터)만 각질 쓰는 저녁엔 쉬기로 — 밤부·굿밤·클렌징 밤·립밤은 아님');
   eq([date('2026-02-30'), date('2024-02-29'), date('2026-13-01'), date('26-11-16'), date(20261116)], ['', '2024-02-29', '', '', ''], '없는 날짜는 버림');
 
   const ps = [P({ id: 'cl', cat: 'cleanser' }), P({ id: 'to', cat: 'toner' }), P({ id: 's', cat: 'serum' }), P({ id: 'sr', cat: 'serum', actives: ['retinol'] }),
@@ -1549,10 +1568,12 @@ function selfTest() {
       { name: 'B', cat: 'etc', actives: [], expiry: '2027-06-30', opened: false, openedAt: '', pao: 0, memo: '', when: '', pair: '', rest: '' },
       { name: '구달 청귤 비타C 세럼', cat: 'serum', actives: ['vitc'], expiry: '', opened: false, openedAt: '', pao: 0, memo: '', when: '', pair: '', rest: '' }, []], 'AI가 읽은 화장품 정리 (이름에 보이는 성분은 채움)');
   eq(cleanCheck({ summary: ' 전반적으로\n좋아요 ', points: [{ kind: '조정', title: '크림은 저녁만', detail: '에스트라 크림의 쓰는 때를\n저녁만으로' }, { kind: '<b>', title: 'x', detail: 'y' }, { kind: '좋음', title: '', detail: '' }, 'junk'] }),
-    { summary: '전반적으로 좋아요', points: [{ kind: '조정', title: '크림은 저녁만', detail: '에스트라 크림의 쓰는 때를 저녁만으로', product: 0, memo: '', when: '' }] }, 'AI 루틴 점검 답 정리');
-  eq(cleanCheck({ points: [{ kind: '조정', title: 't', detail: 'd', product: 3, memo: '볼에만 얇게', when: 'am' }, { kind: '주의', title: 't', detail: 'd', product: '에스트라 크림', when: 'noon' },
-    { kind: '좋음', title: 't', detail: 'd', product: -1 }] }).points.map(p => [p.product, p.memo, p.when]),
-    [[3, '볼에만 얇게', 'am'], [0, '', ''], [0, '', '']], 'AI 점검 제안의 바로 적용 칸 정리 (제품은 목록 번호만)');
+    { summary: '전반적으로 좋아요', points: [{ kind: '조정', title: '크림은 저녁만', detail: '에스트라 크림의 쓰는 때를 저녁만으로', product: 0, memo: '', when: '', rest: '' }] }, 'AI 루틴 점검 답 정리');
+  eq(cleanCheck({ points: [{ kind: '조정', title: 't', detail: 'd', product: 3, memo: '볼에만 얇게', when: 'am', rest: 'acid' }, { kind: '주의', title: 't', detail: 'd', product: '에스트라 크림', when: 'noon', rest: 'always' },
+    { kind: '좋음', title: 't', detail: 'd', product: -1 }] }).points.map(p => [p.product, p.memo, p.when, p.rest]),
+    [[3, '볼에만 얇게', 'am', 'acid'], [0, '', '', ''], [0, '', '', '']], 'AI 점검 제안의 바로 적용 칸 정리 (제품은 목록 번호만, 쉬는 저녁은 정해진 값만)');
+  eq([CHECK_SCHEMA.properties.points.items.properties.rest.enum, cleanItems({ items: [{ name: '시카비오 포마드', cat: 'cream' }, { name: '시카 밤', cat: 'eye' }] }).map(p => p.rest)],
+    [['', 'acid', 'retinol', 'active'], ['acid', '']], 'AI 점검 틀에 쉬는 저녁 칸, 사진 등록은 AI 가 읽은 종류가 크림일 때만 미리 고름');
   eq(CHECK_SCHEMA.properties.points.items.properties.product, { type: 'integer' }, 'AI 점검 틀: 제품은 번호로 (이름 목록을 넣으면 제품이 많을 때 Gemini 가 400)');
   const gx = [P({ id: 'n', name: '더마팩토리 나이아신아마이드 20% 세럼', cat: 'serum' }), P({ id: 'h', name: '디어스 히알루론시카 7초 세럼 인 앰플', cat: 'serum' }),
     P({ id: 'c', name: '바이오더마 시카비오 포마드', cat: 'cream' }), P({ id: 'l1', name: '라곰 셀업 젤 투 워터 클렌저', cat: 'cleanser' }), P({ id: 'l2', name: '라곰 셀업 마이크로 포어 클렌징 오일', cat: 'oil' })];
