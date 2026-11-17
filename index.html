@@ -700,7 +700,9 @@ async function checkForm() {                  // AI 루틴 점검 결과 창 (�
     form.querySelector('.check').innerHTML = r.points.length ? `<ul class="alts">${r.points.map(p => {
       const q = find(p.product), acts = !q ? '' : [
         p.memo && !q.memo.includes(p.memo) ? `<button type="button" data-act="applyMemo" data-id="${esc(q.id)}" data-memo="${esc(p.memo)}">📝 메모에 넣기</button>` : '',
-        p.when && group(q) === 'daily' && q.when !== p.when ? `<button type="button" data-act="applyWhen" data-id="${esc(q.id)}" data-when="${p.when}">${p.when === 'am' ? '아침만으로' : '저녁만으로'}</button>` : '',
+        !p.when || group(q) !== 'daily' ? ''
+          : q.when !== p.when ? `<button type="button" data-act="applyWhen" data-id="${esc(q.id)}" data-when="${p.when}">${p.when === 'am' ? '아침만으로' : '저녁만으로'}</button>`
+          : `<small>✓ 이미 ${p.when === 'am' ? '아침만' : '저녁만'}으로 되어 있어요</small>`,      // 이미 된 것을 다시 권하면 버튼 대신 알려 준다
       ].join('');
       return `<li><span class="tag ${CHECK_KINDS[p.kind]}">${p.kind}</span><span class="what"><b>${esc(p.title)}</b><small>${esc(p.detail)}</small>${acts ? `<span class="acts">${acts}</span>` : ''}</span></li>`;
     }).join('')}</ul>` : '';
@@ -877,6 +879,7 @@ const CHECK_PROMPT = `화장품 루틴 앱이에요. 사용자의 실제 제품 
 - summary: 한국어 두 문장 이내로 전체 인상.
 - points: 최대 6개. kind 는 좋음(잘하고 있는 점) · 조정(앱 설정으로 바꾸면 좋은 점) · 주의(성분 겹침·자극처럼 조심할 점). 조정은 detail 에 앱에서 무엇을 어떻게 바꾸면 되는지(예: "○○의 쓰는 때를 저녁만으로") 적어요. 제품 이름은 목록에 있는 그대로 써요. title 은 20자 안팎, detail 은 세 문장 이내.
 - 각 point 의 product: 한 제품에 관한 항목이면 목록에 있는 그대로의 제품 이름, 아니면 "". memo: 그 제품 메모에 적어 두면 좋은 바르는 법을 30자 안팎으로(없으면 ""). when: 그 제품의 쓰는 때를 바꾸자는 제안이면 am(아침만)·pm(저녁만), 아니면 "" — 레티놀·각질·팩 제품엔 넣지 않아요. 앱이 이 칸들로 버튼을 만들어 바로 적용해요.
+- 조정 항목은 product 를 고르고 when·memo 중 맞는 것을 꼭 채워요(글로만 설명하면 버튼이 안 생겨요). 이미 그 쓰는 때로 되어 있는 제품엔 같은 쓰는 때를 권하지 않아요.
 - 특정 브랜드 제품을 사라고 하지 않아요. 병명을 말하지 않고, 걱정되는 증상이면 피부과 상담을 권해요.`;
 const CHECK_KINDS = { 좋음: 'on', 조정: 'warn', 주의: 'bad' };      // 점검 항목 종류 → 표시 색
 const CHECK_SCHEMA = {
@@ -924,7 +927,9 @@ function cleanItems(r) {                      // AI 가 읽은 화장품도 믿�
 const jpeg = photo => ({ inlineData: { mimeType: 'image/jpeg', data: photo.slice(photo.indexOf(',') + 1) } });
 const analyzeSkin = async (photo, key) => cleanAnalysis(await askGemini([jpeg(photo), { text: '이 사진의 피부 상태를 기록해 주세요.' }], key, SKIN_PROMPT, SKIN_SCHEMA));
 const readProducts = async (photo, key) => cleanItems(await askGemini([jpeg(photo), { text: '이 사진 속 화장품을 읽어 주세요.' }], key, PRODUCT_PROMPT, PRODUCT_SCHEMA));
-const checkRoutineAI = async key => cleanCheck(await askGemini([{ text: routineText(state, today()) }], key, CHECK_PROMPT, CHECK_SCHEMA));
+// 제품 이름은 목록에 있는 것 중에서만 고르게 한다 — 「시카 크림」처럼 줄여 쓰면 어느 제품인지 몰라 적용 버튼을 못 붙였다 (11-17)
+const checkSchema = names => { const s = structuredClone(CHECK_SCHEMA); s.properties.points.items.properties.product.enum = ['', ...new Set(names)]; return s; };
+const checkRoutineAI = async key => cleanCheck(await askGemini([{ text: routineText(state, today()) }], key, CHECK_PROMPT, checkSchema(state.products.map(p => p.name))));
 async function askGemini(parts, apiKey, prompt, schema) {      // parts = 보낼 사진·글
   let err;
   for (const [model, think] of MODELS) {
@@ -1358,6 +1363,8 @@ function selfTest() {
     { summary: '전반적으로 좋아요', points: [{ kind: '조정', title: '크림은 저녁만', detail: '에스트라 크림의 쓰는 때를 저녁만으로', product: '', memo: '', when: '' }] }, 'AI 루틴 점검 답 정리');
   eq(cleanCheck({ points: [{ kind: '조정', title: 't', detail: 'd', product: ' 에스트라\n크림 ', memo: '볼에만 얇게', when: 'am' }, { kind: '주의', title: 't', detail: 'd', when: 'noon' }] }).points.map(p => [p.product, p.memo, p.when]),
     [['에스트라 크림', '볼에만 얇게', 'am'], ['', '', '']], 'AI 점검 제안의 바로 적용 칸 정리');
+  eq([checkSchema(['크림A', '토너B', '크림A']).properties.points.items.properties.product.enum, CHECK_SCHEMA.properties.points.items.properties.product.enum],
+    [['', '크림A', '토너B'], undefined], 'AI 점검: 제품 이름은 목록에 있는 것 중에서만 (원래 틀은 그대로)');
   const rt = routineText({ products: [P({ id: 'a', name: '토너A', cat: 'toner', actives: ['acid'], when: 'pm', memo: '부드럽게\n닦기' }), { ...P({ id: 'b', name: '크림B', cat: 'cream' }), opened: false }],
     logs: [{ date: '2026-11-10', tags: ['건조'] }, { date: '2026-11-15', tags: ['예민', '홍조'] }, { date: '2027-01-01', tags: ['좋음'] }], routine: { manual: false, days: DAYS.map((_, i) => ({ am: [], pm: i === 1 ? ['a'] : [] })) } }, '2026-11-16').split('\n');
   ok(rt.includes('- 토너A | 토너·스킨 | 성분: AHA·BHA·효소 | 쓰는 때: 각질 날 저녁(화·토) 고정 | 메모: 부드럽게 닦기') && rt.includes('- 크림B | 크림') && rt.includes('화 저녁: 토너A') && rt.includes('월 아침: 없음')
