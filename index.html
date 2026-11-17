@@ -931,21 +931,23 @@ async function backupForm() {
       `<label class="pill"><input type="radio" name="skinType" value="${k}" ${k === state.skin.type ? 'checked' : ''}> ${n}</label>`).join('')}</div>
     <label class="pill"><input type="checkbox" name="sensitive" ${state.skin.sensitive ? 'checked' : ''}> 민감성 (쉽게 붉어지거나 따가워요)</label>
     <h2>AI 사진 읽기 (Google Gemini 무료)</h2>
-    <p class="muted">Google AI Studio(aistudio.google.com)에서 무료 API 키를 만들어 넣으면, 피부 사진은 상태 칸과 메모를, 화장품 사진은 이름·종류·기한을 Gemini가 채워 줘요. 결제 정보를 연결하지 않은 프로젝트의 키면 요금이 나가지 않아요.</p>
-    <p class="note">무료 등급이라 구글에 보낸 사진과 받은 답을 구글이 제품 개선에 쓰고, 사람 검토자가 볼 수도 있어요. 구글은 무료 등급에 민감한 개인정보를 보내지 말라고 안내해요. 얼굴 전체보다 피부 부분만 가까이 찍기를 권해요.</p>
-    <p class="muted">키는 이 브라우저에만 저장되고 백업 파일에는 들어가지 않아요. Google Cloud 콘솔의 키 설정에서 웹사이트 제한을 ${esc(location.origin)}/* 로, API 제한을 Generative Language API로 걸어 두면 다른 웹사이트에서는 이 키를 못 써요. 다만 브라우저 밖에서 쓰는 것까지는 막지 못해요.</p>
+    ${help('Google AI Studio에서 무료 API 키를 만들어 넣어요', 'aistudio.google.com 에서 만들 수 있어요. 키를 넣으면 피부 사진은 상태 칸과 메모를, 화장품 사진은 이름·종류·기한을 Gemini가 채워 주고, AI 루틴 점검도 쓸 수 있어요. 결제 정보를 연결하지 않은 프로젝트의 키면 요금이 나가지 않아요.')}
+    <div class="note"><details><summary>무료 등급은 보낸 사진과 받은 답을 구글이 제품 개선에 쓰고, 사람이 볼 수도 있어요</summary><span>구글은 무료 등급에 민감한 개인정보를 보내지 말라고 안내해요. 얼굴 전체보다 피부 부분만 가까이 찍기를 권해요.</span></details></div>
+    ${help('키는 이 브라우저에만 저장되고 백업 파일엔 안 들어가요', `Google Cloud 콘솔의 키 설정에서 웹사이트 제한을 ${esc(location.origin)}/* 로, API 제한을 Generative Language API로 걸어 두면 다른 웹사이트에서는 이 키를 못 써요. 다만 브라우저 밖에서 쓰는 것까지는 막지 못해요.`)}
     ${key === null ? '<p class="note">저장소를 읽지 못했어요. 새로고침해 주세요.</p>'
       : key ? `<p>등록된 키 …${esc(key.slice(-4))}</p><button type="button" class="danger" data-act="delKey">키 지우기</button>`
       : `<label>Gemini API 키 <input name="apiKey" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="AIza…"></label><button name="saveKey">키 저장</button>`}
     <h2>백업·복원</h2>
-    <p class="muted">모든 내용은 이 기기의 이 브라우저 안에만 저장돼요. 브라우저 데이터를 지우거나 기기를 바꾸면 사라지니 가끔 백업 파일로 내려받아 두세요.</p>
+    ${help('기록은 이 기기의 이 브라우저 안에만 있어요 — 가끔 백업해 두세요', '브라우저 데이터를 지우거나 기기를 바꾸면 사라져요. 백업 파일로 내려받아 두면 다시 가져올 수 있어요.')}
     <p>화장품 ${state.products.length}개 · 피부 기록 ${state.logs.length}건 · 마지막 백업 ${state.backupAt || '없음'}</p>
     <button type="button" data-act="export">백업 파일 내보내기</button>
     <label class="btn"><input type="file" accept=".json,application/json" class="sr" data-pick="backup">백업 파일 가져오기</label>
-    <p class="muted">저장 보호: ${kept ? '켜짐 — 저장 공간이 부족해도 브라우저가 이 앱의 기록을 지우지 않아요.' : kept === false ? '꺼짐 — 저장 공간이 부족하면 브라우저가 이 앱의 기록을 지울 수도 있어요.' : '확인할 수 없어요.'}</p>
+    ${kept ? help('저장 보호: 켜짐', '저장 공간이 부족해도 브라우저가 이 앱의 기록을 지우지 않아요.')
+      : kept === false ? help('저장 보호: 꺼짐 — 저장 공간이 부족하면 기록이 지워질 수 있어요', '브라우저가 저장 공간을 비울 때 이 앱의 기록도 지울 수 있어요. 홈 화면에 앱으로 설치하면 켜지기 쉽고, 백업 파일을 만들어 두면 안전해요.')
+      : '<p class="muted">저장 보호: 확인할 수 없어요.</p>'}
     ${standalone() ? '' : `<h2>홈 화면에 앱으로 설치</h2>
-    <p class="muted">브라우저 메뉴(크롬은 오른쪽 위 ⋮, 삼성 인터넷은 아래쪽 ≡)에서 「홈 화면에 추가」나 「앱 설치」를 누르면 아이콘으로 바로 열 수 있어요. 설치한 앱은 브라우저가 기록을 지키는 쪽으로 다뤄서 저장 보호가 켜지기 쉬워요. 같은 브라우저 안이라 기록은 그대로 이어져요.</p>
-    <p class="note">크롬과 삼성 인터넷처럼 다른 브라우저끼리는 기록이 따로예요. 브라우저를 바꿀 땐 백업 파일로 옮겨 주세요(AI 키는 백업에 안 들어가요).</p>`}
+    ${help('브라우저 메뉴에서 「홈 화면에 추가」나 「앱 설치」를 눌러요', '크롬은 오른쪽 위 ⋮, 삼성 인터넷은 아래쪽 ≡ 메뉴예요. 아이콘으로 바로 열 수 있고, 설치한 앱은 브라우저가 기록을 지키는 쪽으로 다뤄서 저장 보호가 켜지기 쉬워요. 같은 브라우저 안이라 기록은 그대로 이어져요.')}
+    <div class="note"><details><summary>크롬과 삼성 인터넷처럼 브라우저가 다르면 기록이 따로예요</summary><span>브라우저를 바꿀 땐 백업 파일로 옮겨 주세요(AI 키는 백업에 안 들어가요).</span></details></div>`}
     <div class="actions"><span class="grow"></span><button class="primary">닫기</button></div></form>`);
 }
 
