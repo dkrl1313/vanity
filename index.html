@@ -68,6 +68,9 @@ nav button[aria-current] { color: var(--accent); font-weight: 700; }
 .chip { min-height: 34px; padding: 4px 12px; border-radius: 999px; font-size: 13px; color: var(--muted); }
 .chip.on { background: var(--soft); border-color: transparent; color: var(--accent); font-weight: 700; }
 .filters .chip[aria-pressed=true] { background: var(--ink); border-color: var(--ink); color: var(--bg); font-weight: 700; }
+.kinds { margin: 0 0 10px; line-height: 1.7; }
+.kinds span { white-space: nowrap; }
+.kinds b { color: var(--ink); }
 
 /* 루틴 */
 .days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; margin-bottom: 10px; }
@@ -574,6 +577,11 @@ function viewProducts() {
   const chips = Object.entries(F).map(([k, [name, fn]]) =>
     `<button id="f-${k}" class="chip" data-act="filter" data-f="${k}" aria-pressed="${k === filter}">${name} ${rows.filter(fn).length}</button>`).join('')
     + (state.done.length ? `<button id="f-done" class="chip" data-act="filter" data-f="done" aria-pressed="${filter === 'done'}">다 쓴 제품 ${state.done.length}</button>` : '');
+  // 종류별 개수 (바르는 순서대로, 다 쓴 제품 제외). 미개봉이 섞여 있으면 따로 센다
+  const kinds = ORDER.map(c => [c, state.products.filter(p => p.cat === c)]).filter(([, l]) => l.length).map(([c, l]) => {
+    const s = l.filter(p => !p.opened).length;
+    return `<span>${CATS[c][0]} <b>${l.length}</b>${s ? ` (미개봉 ${s})` : ''}</span>`;
+  }).join(' · ');
   // 다 쓴 제품: 또 살래요 먼저, 최근에 다 쓴 것부터. 쓴 기간 = 개봉일부터 다 쓴 날까지
   const doneCards = () => [...state.done].sort((a, b) => b.again - a.again || b.doneAt.localeCompare(a.doneAt)).map(x => `<article class="card prod">
       <span class="name">${esc(x.name)}</span>${x.again ? '<span class="tag on">또 살래요</span>' : '<span></span>'}
@@ -590,6 +598,7 @@ function viewProducts() {
   return `<div class="adds"><button id="add" class="primary" data-act="add">＋ 직접 등록</button>
     <label class="btn"><input type="file" accept="image/*" class="sr" data-pick="product">📷 사진으로 등록</label></div>` + (state.products.length || state.done.length
     ? `<div class="filters" role="group" aria-label="걸러 보기">${chips}</div>`
+      + (kinds ? `<p class="muted kinds">${kinds}</p>` : '')
       + ((n => n && (filter === 'all' || filter === 'none') ? `<button id="fill" class="wide" data-act="fillNext">📷 기한 없는 ${n}개 하나씩 채우기</button>` : '')(rows.filter(r => !r.e).length))
       + (cards || '<p class="empty">해당하는 화장품이 없어요</p>')
     : '<div class="empty"><p><b>등록된 화장품이 없어요</b></p><p>사진으로 등록하면 AI가 이름·종류·기한을 읽어 줘요. 한 장에 여러 개를 찍어도 돼요. 뒷면(전성분·사용기한)이 보이게 찍으면 성분까지 채워요.<br>직접 등록할 땐 이름만 적어도 종류를 골라 줘요.</p></div>');
