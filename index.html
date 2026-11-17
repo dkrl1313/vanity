@@ -810,8 +810,8 @@ async function checkForm() {                  // AI 루틴 점검 결과 창 (�
         !p.memo ? '' : !q.memo.includes(p.memo) ? `<button type="button" data-act="applyMemo" data-id="${esc(q.id)}" data-memo="${esc(p.memo)}">📝 메모에 넣기</button>`
           : '<small>✓ 이미 메모에 있어요</small>',
         !p.when || group(q) !== 'daily' ? ''
-          : q.when !== p.when ? `<button type="button" data-act="applyWhen" data-id="${esc(q.id)}" data-when="${p.when}">${p.when === 'am' ? '아침만으로' : '저녁만으로'}</button>`
-          : `<small>✓ 이미 ${p.when === 'am' ? '아침만' : '저녁만'}으로 되어 있어요</small>`,      // 이미 된 것을 다시 권하면 버튼 대신 알려 준다
+          : q.when !== CHECK_WHEN[p.when][0] ? `<button type="button" data-act="applyWhen" data-id="${esc(q.id)}" data-when="${p.when}">${CHECK_WHEN[p.when][1]}으로</button>`
+          : `<small>✓ 이미 ${CHECK_WHEN[p.when][1]}으로 되어 있어요</small>`,      // 이미 된 것을 다시 권하면 버튼 대신 알려 준다
         !p.rest || group(q) !== 'daily' ? ''
           : q.rest !== p.rest ? `<button type="button" data-act="applyRest" data-id="${esc(q.id)}" data-rest="${p.rest}">${REST[p.rest][0]}엔 쉬기</button>`
           : `<small>✓ 이미 ${REST[p.rest][0]}엔 쉬게 되어 있어요</small>`,
@@ -1001,15 +1001,17 @@ ${APP_RULES}
 루틴에 실제로 보이는 것만 짚고, 위 규칙 때문에 이미 해결된 것은 말하지 않아요.
 - summary: 한국어 두 문장 이내로 전체 인상.
 - points: 최대 6개. kind 는 좋음(잘하고 있는 점) · 조정(앱 설정으로 바꾸면 좋은 점) · 주의(성분 겹침·자극처럼 조심할 점). 조정은 detail 에 앱에서 무엇을 어떻게 바꾸면 되는지(예: "○○의 쓰는 때를 저녁만으로") 적어요. 제품 이름은 목록에 있는 그대로 써요. title 은 20자 안팎, detail 은 세 문장 이내.
-- 각 point 의 product: 한 제품에 관한 항목이면 제품 목록 줄 앞의 [번호] 숫자, 아니면 0. memo: 그 제품 메모에 적어 두면 좋은 바르는 법을 30자 안팎으로(없으면 ""). when: 그 제품의 쓰는 때를 바꾸자는 제안이면 am(아침만)·pm(저녁만), 아니면 "" — 레티놀·각질·팩 제품엔 넣지 않아요. rest: 그 제품을 특정 저녁엔 빼자는 제안이면 acid(각질 성분 쓰는 저녁)·retinol(레티놀 쓰는 저녁)·active(둘 다), 아니면 "" — 밤·포마드·연고처럼 꾸덕하게 덮는 제품을 각질 마스크·패드를 쓰는 저녁에 겹쳐 바르게 될 때 같은 경우예요. 레티놀·각질·팩 제품 자신과 이미 그렇게 설정된 제품엔 넣지 않아요. 앱이 이 칸들로 버튼을 만들어 바로 적용해요.
+- 각 point 의 product: 한 제품에 관한 항목이면 제품 목록 줄 앞의 [번호] 숫자, 아니면 0. memo: 그 제품 메모에 적어 두면 좋은 바르는 법을 30자 안팎으로(없으면 ""). when: 그 제품의 쓰는 때를 바꾸자는 제안이면 am(아침만)·pm(저녁만)·auto(아침만·저녁만으로 묶어 둔 것을 풀어 자동으로 — 아침·저녁 모두 쓰게), 아니면 "" — 레티놀·각질·팩 제품엔 넣지 않아요. rest: 그 제품을 특정 저녁엔 빼자는 제안이면 acid(각질 성분 쓰는 저녁)·retinol(레티놀 쓰는 저녁)·active(둘 다), 아니면 "" — 밤·포마드·연고처럼 꾸덕하게 덮는 제품을 각질 마스크·패드를 쓰는 저녁에 겹쳐 바르게 될 때 같은 경우예요. 레티놀·각질·팩 제품 자신과 이미 그렇게 설정된 제품엔 넣지 않아요. 앱이 이 칸들로 버튼을 만들어 바로 적용해요.
 - 조정 항목은 product 번호를 꼭 고르고 when·memo·rest 중 맞는 것을 꼭 채워요(글로만 설명하면 버튼이 안 생겨요). 메모를 권하면 memo 칸에 적을 글 자체를 넣어요(예: "콩알만큼 덜어 바르기"). 이미 그 쓰는 때로 되어 있는 제품엔 같은 쓰는 때를 권하지 않아요.
 - 특정 브랜드 제품을 사라고 하지 않아요. 병명을 말하지 않고, 걱정되는 증상이면 피부과 상담을 권해요.`;
 const CHECK_KINDS = { 좋음: 'on', 조정: 'warn', 주의: 'bad' };      // 점검 항목 종류 → 표시 색
+// 점검이 권하는 쓰는 때 → [제품에 넣을 값, 버튼에 쓸 이름]. auto = 아침만·저녁만으로 묶어 둔 것을 풀기 (11-17: 「자동으로 변경해 보세요」라는 조정에 버튼이 없었다 — 틀에 값이 없어서)
+const CHECK_WHEN = { am: ['am', '아침만'], pm: ['pm', '저녁만'], auto: ['', '쓰는 때 자동'] };
 const CHECK_SCHEMA = {
   type: 'object',
   properties: { summary: { type: 'string' }, points: { type: 'array', maxItems: 6, items: {
     type: 'object', properties: { kind: { type: 'string', enum: Object.keys(CHECK_KINDS) }, title: { type: 'string' }, detail: { type: 'string' },
-      product: { type: 'integer' }, memo: { type: 'string' }, when: { type: 'string', enum: ['', 'am', 'pm'] }, rest: { type: 'string', enum: ['', ...Object.keys(REST)] } },
+      product: { type: 'integer' }, memo: { type: 'string' }, when: { type: 'string', enum: ['', ...Object.keys(CHECK_WHEN)] }, rest: { type: 'string', enum: ['', ...Object.keys(REST)] } },
     required: ['kind', 'title', 'detail', 'product', 'memo', 'when', 'rest'], additionalProperties: false,
   } } },
   required: ['summary', 'points'], additionalProperties: false,
@@ -1018,7 +1020,7 @@ function cleanCheck(r) {                      // AI 답도 정해진 칸·길이
   const line = (v, max) => text(typeof v === 'string' ? v.replace(/\s+/g, ' ') : '', max);
   return { summary: line(r?.summary, 300),
     points: (Array.isArray(r?.points) ? r.points : []).filter(p => Object.hasOwn(CHECK_KINDS, p?.kind)).slice(0, 6)
-      .map(p => ({ kind: p.kind, title: line(p.title, 60), detail: line(p.detail, 400), product: Number.isInteger(p.product) && p.product > 0 ? p.product : 0, memo: line(p.memo, 100), when: ['am', 'pm'].includes(p.when) ? p.when : '',
+      .map(p => ({ kind: p.kind, title: line(p.title, 60), detail: line(p.detail, 400), product: Number.isInteger(p.product) && p.product > 0 ? p.product : 0, memo: line(p.memo, 100), when: Object.hasOwn(CHECK_WHEN, p.when) ? p.when : '',
         rest: Object.hasOwn(REST, p.rest) ? p.rest : '' }))
       .filter(p => p.title || p.detail) };
 }
@@ -1266,9 +1268,10 @@ const ACT = {
     applied(d, '✓ 메모에 넣었어요'); toast(`‘${p.name}’ 메모에 넣었어요`);
   },
   applyWhen(d) {                              // AI 점검 제안 → 쓰는 때 바꾸기
-    const p = product(d.id); if (!p || !['am', 'pm'].includes(d.when)) return;
-    p.when = d.when; dropClash(p); commit();
-    applied(d, `✓ ${d.when === 'am' ? '아침만' : '저녁만'}으로 바꿨어요`); toast(`‘${p.name}’을(를) ${d.when === 'am' ? '아침만' : '저녁만'}으로 바꿨어요`);
+    const p = product(d.id); if (!p || !Object.hasOwn(CHECK_WHEN, d.when)) return;
+    const [when, name] = CHECK_WHEN[d.when];
+    p.when = when; dropClash(p); commit();
+    applied(d, `✓ ${name}으로 바꿨어요`); toast(`‘${p.name}’을(를) ${name}으로 바꿨어요`);
   },
   applyRest(d) {                              // AI 점검 제안 → 쉬는 저녁 고르기
     const p = product(d.id); if (!p || !Object.hasOwn(REST, d.rest)) return;
@@ -1623,8 +1626,9 @@ function selfTest() {
   eq(cleanCheck({ summary: ' 전반적으로\n좋아요 ', points: [{ kind: '조정', title: '크림은 저녁만', detail: '에스트라 크림의 쓰는 때를\n저녁만으로' }, { kind: '<b>', title: 'x', detail: 'y' }, { kind: '좋음', title: '', detail: '' }, 'junk'] }),
     { summary: '전반적으로 좋아요', points: [{ kind: '조정', title: '크림은 저녁만', detail: '에스트라 크림의 쓰는 때를 저녁만으로', product: 0, memo: '', when: '', rest: '' }] }, 'AI 루틴 점검 답 정리');
   eq(cleanCheck({ points: [{ kind: '조정', title: 't', detail: 'd', product: 3, memo: '볼에만 얇게', when: 'am', rest: 'acid' }, { kind: '주의', title: 't', detail: 'd', product: '에스트라 크림', when: 'noon', rest: 'always' },
-    { kind: '좋음', title: 't', detail: 'd', product: -1 }] }).points.map(p => [p.product, p.memo, p.when, p.rest]),
-    [[3, '볼에만 얇게', 'am', 'acid'], [0, '', '', ''], [0, '', '', '']], 'AI 점검 제안의 바로 적용 칸 정리 (제품은 목록 번호만, 쉬는 저녁은 정해진 값만)');
+    { kind: '좋음', title: 't', detail: 'd', product: -1 }, { kind: '조정', title: 't', detail: 'd', product: 2, when: 'auto' }] }).points.map(p => [p.product, p.memo, p.when, p.rest]),
+    [[3, '볼에만 얇게', 'am', 'acid'], [0, '', '', ''], [0, '', '', ''], [2, '', 'auto', '']], 'AI 점검 제안의 바로 적용 칸 정리 (제품은 목록 번호만, 쉬는 저녁은 정해진 값만, 쓰는 때는 아침만·저녁만·자동으로 풀기)');
+  eq([CHECK_SCHEMA.properties.points.items.properties.when.enum, CHECK_WHEN.auto[0], CHECK_PROMPT.includes('auto(')], [['', 'am', 'pm', 'auto'], '', true], 'AI 점검 틀: 쓰는 때를 자동으로 되돌리는 제안(auto → 빈 값)');
   eq([CHECK_SCHEMA.properties.points.items.properties.rest.enum, cleanItems({ items: [{ name: '시카비오 포마드', cat: 'cream' }, { name: '시카 밤', cat: 'eye' }] }).map(p => p.rest)],
     [['', 'acid', 'retinol', 'active'], ['acid', '']], 'AI 점검 틀에 쉬는 저녁 칸, 사진 등록은 AI 가 읽은 종류가 크림일 때만 미리 고름');
   eq(CHECK_SCHEMA.properties.points.items.properties.product, { type: 'integer' }, 'AI 점검 틀: 제품은 번호로 (이름 목록을 넣으면 제품이 많을 때 Gemini 가 400)');
