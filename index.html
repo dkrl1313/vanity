@@ -702,10 +702,9 @@ async function checkForm() {                  // AI 루틴 점검 결과 창 (�
     const r = await checkRoutineAI(key);
     if (!live()) return;
     out.textContent = r.summary || '점검을 마쳤어요.';
-    // 제안이 한 제품에 관한 것이면 바로 적용 버튼 — 이름은 그대로 맞거나, 한 제품에만 걸리는 부분 일치로 찾는다
-    const find = n => n ? state.products.find(x => x.name === n) ?? (m => (m.length === 1 ? m[0] : null))(state.products.filter(x => x.name.includes(n) || n.includes(x.name))) : null;
+    // 제안이 한 제품에 관한 것이면 바로 적용 버튼 (제품은 보낸 목록의 번호로 찾는다 — checkRoutineAI)
     form.querySelector('.check').innerHTML = r.points.length ? `<ul class="alts">${r.points.map(p => {
-      const q = find(p.product), acts = !q ? '' : [
+      const q = p.id ? product(p.id) : null, acts = !q ? '' : [
         p.memo && !q.memo.includes(p.memo) ? `<button type="button" data-act="applyMemo" data-id="${esc(q.id)}" data-memo="${esc(p.memo)}">📝 메모에 넣기</button>` : '',
         !p.when || group(q) !== 'daily' ? ''
           : q.when !== p.when ? `<button type="button" data-act="applyWhen" data-id="${esc(q.id)}" data-when="${p.when}">${p.when === 'am' ? '아침만으로' : '저녁만으로'}</button>`
@@ -885,7 +884,7 @@ const CHECK_PROMPT = `화장품 루틴 앱이에요. 사용자의 실제 제품 
 루틴에 실제로 보이는 것만 짚고, 위 규칙 때문에 이미 해결된 것은 말하지 않아요.
 - summary: 한국어 두 문장 이내로 전체 인상.
 - points: 최대 6개. kind 는 좋음(잘하고 있는 점) · 조정(앱 설정으로 바꾸면 좋은 점) · 주의(성분 겹침·자극처럼 조심할 점). 조정은 detail 에 앱에서 무엇을 어떻게 바꾸면 되는지(예: "○○의 쓰는 때를 저녁만으로") 적어요. 제품 이름은 목록에 있는 그대로 써요. title 은 20자 안팎, detail 은 세 문장 이내.
-- 각 point 의 product: 한 제품에 관한 항목이면 목록에 있는 그대로의 제품 이름, 아니면 "". memo: 그 제품 메모에 적어 두면 좋은 바르는 법을 30자 안팎으로(없으면 ""). when: 그 제품의 쓰는 때를 바꾸자는 제안이면 am(아침만)·pm(저녁만), 아니면 "" — 레티놀·각질·팩 제품엔 넣지 않아요. 앱이 이 칸들로 버튼을 만들어 바로 적용해요.
+- 각 point 의 product: 한 제품에 관한 항목이면 제품 목록 줄 앞의 [번호] 숫자, 아니면 0. memo: 그 제품 메모에 적어 두면 좋은 바르는 법을 30자 안팎으로(없으면 ""). when: 그 제품의 쓰는 때를 바꾸자는 제안이면 am(아침만)·pm(저녁만), 아니면 "" — 레티놀·각질·팩 제품엔 넣지 않아요. 앱이 이 칸들로 버튼을 만들어 바로 적용해요.
 - 조정 항목은 product 를 고르고 when·memo 중 맞는 것을 꼭 채워요(글로만 설명하면 버튼이 안 생겨요). 이미 그 쓰는 때로 되어 있는 제품엔 같은 쓰는 때를 권하지 않아요.
 - 특정 브랜드 제품을 사라고 하지 않아요. 병명을 말하지 않고, 걱정되는 증상이면 피부과 상담을 권해요.`;
 const CHECK_KINDS = { 좋음: 'on', 조정: 'warn', 주의: 'bad' };      // 점검 항목 종류 → 표시 색
@@ -893,7 +892,7 @@ const CHECK_SCHEMA = {
   type: 'object',
   properties: { summary: { type: 'string' }, points: { type: 'array', maxItems: 6, items: {
     type: 'object', properties: { kind: { type: 'string', enum: Object.keys(CHECK_KINDS) }, title: { type: 'string' }, detail: { type: 'string' },
-      product: { type: 'string' }, memo: { type: 'string' }, when: { type: 'string', enum: ['', 'am', 'pm'] } },
+      product: { type: 'integer' }, memo: { type: 'string' }, when: { type: 'string', enum: ['', 'am', 'pm'] } },
     required: ['kind', 'title', 'detail', 'product', 'memo', 'when'], additionalProperties: false,
   } } },
   required: ['summary', 'points'], additionalProperties: false,
@@ -902,7 +901,7 @@ function cleanCheck(r) {                      // AI 답도 정해진 칸·길이
   const line = (v, max) => text(typeof v === 'string' ? v.replace(/\s+/g, ' ') : '', max);
   return { summary: line(r?.summary, 300),
     points: (Array.isArray(r?.points) ? r.points : []).filter(p => Object.hasOwn(CHECK_KINDS, p?.kind)).slice(0, 6)
-      .map(p => ({ kind: p.kind, title: line(p.title, 60), detail: line(p.detail, 400), product: line(p.product, 80), memo: line(p.memo, 100), when: ['am', 'pm'].includes(p.when) ? p.when : '' }))
+      .map(p => ({ kind: p.kind, title: line(p.title, 60), detail: line(p.detail, 400), product: Number.isInteger(p.product) && p.product > 0 ? p.product : 0, memo: line(p.memo, 100), when: ['am', 'pm'].includes(p.when) ? p.when : '' }))
       .filter(p => p.title || p.detail) };
 }
 // 점검에 보낼 글: 제품(개봉 = 루틴 대상)·이번 주 루틴·가장 최근 피부 상태 태그 (사진·피부 메모는 안 보낸다)
@@ -913,12 +912,13 @@ function routineText(s, now) {
   const FIXED = { retinol: `레티놀 날 저녁(${on('retinol')}) 고정`, acid: `각질 날 저녁(${on('acid')}) 고정`, pack: `팩 날 저녁(${on('pack')}) 고정` };
   const when = p => FIXED[group(p)] ?? ({ '': '자동', am: '아침만', pm: '저녁만' }[p.when]
     + (p.cat === 'cleanser' && p.actives.includes('acid') ? ' (씻어 내는 제품이라 매일 써도 되고, 레티놀·각질 날엔 앱이 순한 클렌저로 바꿈)' : ''));
-  const line = p => `- ${p.name} | ${CATS[p.cat][0]} | 성분: ${p.actives.map(a => ACTIVES[a]).join('·') || '없음'} | 쓰는 때: ${when(p)}`
+  const no = p => `[${s.products.indexOf(p) + 1}]`;      // 점검 답에서 제품을 가리킬 번호
+  const line = p => `- ${no(p)} ${p.name} | ${CATS[p.cat][0]} | 성분: ${p.actives.map(a => ACTIVES[a]).join('·') || '없음'} | 쓰는 때: ${when(p)}`
     + `${expired(p, now) ? ' | 기한 지남' : nearEnd(p, now) ? ` | 기한 ${left(p, now)}일 남음` : ''}${p.memo ? ` | 메모: ${p.memo.replace(/\s+/g, ' ')}` : ''}${name(p.pair) ? ` | 바로 앞에 함께 바름: ${name(p.pair)}` : ''}`;
   const opened = s.products.filter(p => p.opened), sealed = s.products.filter(p => !p.opened);
   const last = s.logs.filter(l => l.date <= now).sort((a, b) => b.date.localeCompare(a.date))[0];
   return [`[개봉한 제품 = 루틴 대상 ${opened.length}개]`, ...opened.map(line),
-    `[아직 안 뜯은 제품 ${sealed.length}개]`, ...sealed.map(p => `- ${p.name} | ${CATS[p.cat][0]}`),
+    `[아직 안 뜯은 제품 ${sealed.length}개]`, ...sealed.map(p => `- ${no(p)} ${p.name} | ${CATS[p.cat][0]}`),
     `[이번 주 루틴 — ${s.routine.manual ? '사용자가 직접 고친 루틴' : '앱이 자동으로 짠 루틴'}]`,
     ...s.routine.days.flatMap((d, i) => [`${DAYS[i]} 아침: ${d.am.map(name).join(' → ') || '없음'}`, `${DAYS[i]} 저녁: ${d.pm.map(name).join(' → ') || '없음'}`]),
     `[지금 계절] ${SEASONS[seasonOf(now)].name}`,
@@ -934,9 +934,14 @@ function cleanItems(r) {                      // AI 가 읽은 화장품도 믿�
 const jpeg = photo => ({ inlineData: { mimeType: 'image/jpeg', data: photo.slice(photo.indexOf(',') + 1) } });
 const analyzeSkin = async (photo, key) => cleanAnalysis(await askGemini([jpeg(photo), { text: '이 사진의 피부 상태를 기록해 주세요.' }], key, SKIN_PROMPT, SKIN_SCHEMA));
 const readProducts = async (photo, key) => cleanItems(await askGemini([jpeg(photo), { text: '이 사진 속 화장품을 읽어 주세요.' }], key, PRODUCT_PROMPT, PRODUCT_SCHEMA));
-// 제품 이름은 목록에 있는 것 중에서만 고르게 한다 — 「시카 크림」처럼 줄여 쓰면 어느 제품인지 몰라 적용 버튼을 못 붙였다 (11-17)
-const checkSchema = names => { const s = structuredClone(CHECK_SCHEMA); s.properties.points.items.properties.product.enum = ['', ...new Set(names)]; return s; };
-const checkRoutineAI = async key => cleanCheck(await askGemini([{ text: routineText(state, today()) }], key, CHECK_PROMPT, checkSchema(state.products.map(p => p.name))));
+// 제안이 어느 제품인지는 목록 번호로 받는다 — 이름을 쓰게 하면 「시카 크림」처럼 줄여 써서 못 찾고,
+// 이름 중에서 고르게(enum) 하면 제품이 많을 때 Gemini 가 400(too many states)으로 거절한다 (11-17 실측)
+async function checkRoutineAI(key) {
+  const ids = state.products.map(p => p.id);       // 보낸 때의 번호 — 기다리는 사이 제품이 늘거나 지워져도 밀리지 않게
+  const r = cleanCheck(await askGemini([{ text: routineText(state, today()) }], key, CHECK_PROMPT, CHECK_SCHEMA));
+  for (const p of r.points) p.id = ids[p.product - 1] ?? '';
+  return r;
+}
 async function askGemini(parts, apiKey, prompt, schema) {      // parts = 보낼 사진·글
   let err;
   for (const [model, think] of MODELS) {
@@ -1368,14 +1373,14 @@ function selfTest() {
       { name: 'B', cat: 'etc', actives: [], expiry: '2027-06-30', opened: false, openedAt: '', pao: 0, memo: '', when: '', pair: '' },
       { name: '구달 청귤 비타C 세럼', cat: 'serum', actives: ['vitc'], expiry: '', opened: false, openedAt: '', pao: 0, memo: '', when: '', pair: '' }, []], 'AI가 읽은 화장품 정리 (이름에 보이는 성분은 채움)');
   eq(cleanCheck({ summary: ' 전반적으로\n좋아요 ', points: [{ kind: '조정', title: '크림은 저녁만', detail: '에스트라 크림의 쓰는 때를\n저녁만으로' }, { kind: '<b>', title: 'x', detail: 'y' }, { kind: '좋음', title: '', detail: '' }, 'junk'] }),
-    { summary: '전반적으로 좋아요', points: [{ kind: '조정', title: '크림은 저녁만', detail: '에스트라 크림의 쓰는 때를 저녁만으로', product: '', memo: '', when: '' }] }, 'AI 루틴 점검 답 정리');
-  eq(cleanCheck({ points: [{ kind: '조정', title: 't', detail: 'd', product: ' 에스트라\n크림 ', memo: '볼에만 얇게', when: 'am' }, { kind: '주의', title: 't', detail: 'd', when: 'noon' }] }).points.map(p => [p.product, p.memo, p.when]),
-    [['에스트라 크림', '볼에만 얇게', 'am'], ['', '', '']], 'AI 점검 제안의 바로 적용 칸 정리');
-  eq([checkSchema(['크림A', '토너B', '크림A']).properties.points.items.properties.product.enum, CHECK_SCHEMA.properties.points.items.properties.product.enum],
-    [['', '크림A', '토너B'], undefined], 'AI 점검: 제품 이름은 목록에 있는 것 중에서만 (원래 틀은 그대로)');
+    { summary: '전반적으로 좋아요', points: [{ kind: '조정', title: '크림은 저녁만', detail: '에스트라 크림의 쓰는 때를 저녁만으로', product: 0, memo: '', when: '' }] }, 'AI 루틴 점검 답 정리');
+  eq(cleanCheck({ points: [{ kind: '조정', title: 't', detail: 'd', product: 3, memo: '볼에만 얇게', when: 'am' }, { kind: '주의', title: 't', detail: 'd', product: '에스트라 크림', when: 'noon' },
+    { kind: '좋음', title: 't', detail: 'd', product: -1 }] }).points.map(p => [p.product, p.memo, p.when]),
+    [[3, '볼에만 얇게', 'am'], [0, '', ''], [0, '', '']], 'AI 점검 제안의 바로 적용 칸 정리 (제품은 목록 번호만)');
+  eq(CHECK_SCHEMA.properties.points.items.properties.product, { type: 'integer' }, 'AI 점검 틀: 제품은 번호로 (이름 목록을 넣으면 제품이 많을 때 Gemini 가 400)');
   const rt = routineText({ products: [P({ id: 'a', name: '토너A', cat: 'toner', actives: ['acid'], when: 'pm', memo: '부드럽게\n닦기' }), { ...P({ id: 'b', name: '크림B', cat: 'cream' }), opened: false }],
     logs: [{ date: '2026-11-10', tags: ['건조'] }, { date: '2026-11-15', tags: ['예민', '홍조'] }, { date: '2027-01-01', tags: ['좋음'] }], routine: { manual: false, days: DAYS.map((_, i) => ({ am: [], pm: i === 1 ? ['a'] : [] })) } }, '2026-11-16').split('\n');
-  ok(rt.includes('- 토너A | 토너·스킨 | 성분: AHA·BHA·효소 | 쓰는 때: 각질 날 저녁(화·토) 고정 | 메모: 부드럽게 닦기') && rt.includes('- 크림B | 크림') && rt.includes('화 저녁: 토너A') && rt.includes('월 아침: 없음')
+  ok(rt.includes('- [1] 토너A | 토너·스킨 | 성분: AHA·BHA·효소 | 쓰는 때: 각질 날 저녁(화·토) 고정 | 메모: 부드럽게 닦기') && rt.includes('- [2] 크림B | 크림') && rt.includes('화 저녁: 토너A') && rt.includes('월 아침: 없음')
     && rt.at(-1) === '[가장 최근 피부 상태] 2026-11-15: 예민, 홍조', 'AI 루틴 점검에 보내는 글 (앞날짜 기록은 무시)');
   const rs = routineText({ products: [P({ name: '레티놀B', cat: 'serum', actives: ['retinol'] }), P({ name: '패드C', cat: 'toner', actives: ['acid'] })], logs: [], routine: { manual: false, days: DAYS.map(() => ({ am: [], pm: [] })) } }, '2026-12-14');
   ok(rs.includes('레티놀B | 세럼·앰플 | 성분: 레티놀 | 쓰는 때: 레티놀 날 저녁(월·수·금) 고정') && rs.includes('쓰는 때: 각질 날 저녁(토) 고정') && rs.includes('[지금 계절] 겨울'), 'AI 점검 글에 계절과 계절에 맞춘 요일');
