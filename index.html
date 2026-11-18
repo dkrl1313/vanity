@@ -632,6 +632,15 @@ function buyText(s, now) {
   const have = x => (st => st.length ? ` · 미개봉 있음: ${st[0].q.name}${many ? `(${st[0].place})` : ''}${st.length > 1 ? ` 외 ${st.length - 1}개` : ''}` : '')(stocked(s, x, now));
   return [`「화장대」 살 것 ${list.length}개`, ...list.flatMap(({ x, pid, place }, i) => [...(many && pid !== list[i - 1]?.pid ? [`[${place}]`] : []), `- ${x.name} (${CATS[x.cat][0]})${have(x)}`])].join('\n');
 }
+// 피부 기록 날짜(day) 앞 FRESH_DAYS 일 안에 새로 뜯은 제품 이름(최근에 뜯은 것부터) — 피부가 뒤집혔을 때 새로 쓴 것을 짚어 보게. 보여 주기만 하고 루틴은 건드리지 않는다
+// 모든 장소의 제품과 다 쓴 제품(안 맞아 금방 정리했을 수도)을 본다
+// ponytail: 같은 날 BULK 개 이상 개봉으로 적힌 날은 앱에 한꺼번에 등록한 날로 보고 뺀다 — 등록하면 개봉일이 그날로 들어가 실제로 뜯은 날이 아니다(11-18 실제 데이터: 38개가 등록한 이틀에 몰림). 세트를 한날 뜯은 경우까지 가리려면 「등록한 날」을 따로 저장해야 한다
+const FRESH_DAYS = 14, BULK = 4;
+function freshAt(s, day) {
+  const all = ['products', 'done'].flatMap(k => shelves(s, k).flatMap(([, list]) => list)).filter(p => p.openedAt), n = {};
+  for (const p of all) n[p.openedAt] = (n[p.openedAt] ?? 0) + 1;
+  return [...new Set(all.filter(p => p.openedAt <= day && p.openedAt >= addDays(day, -FRESH_DAYS) && n[p.openedAt] < BULK).sort((a, b) => b.openedAt.localeCompare(a.openedAt)).map(p => p.name))];
+}
 const countAll = s => s.products.length + Object.values(s.away).reduce((n, a) => n + a.products.length, 0);      // 모든 장소의 화장품 수
 
 /* ───────── 같이 쓰기 — 계산 (화장품·다 쓴 제품 목록만 Firebase 주소 한 곳에 두고 여러 기기가 맞춘다. 피부 타입·피부 기록·체크·루틴은 기기마다 따로) ───────── */
@@ -998,6 +1007,8 @@ function viewProducts() {
       + (buy.length ? `<button id="f-buy" class="wide" data-act="filter" data-f="buy">🛒 다른 장소의 살 것 ${buy.length}개 보기</button>` : ''));
 }
 
+const freshOf = l => (l.tags.some(t => t !== '좋음') ? freshAt(state, l.date) : []);      // 좋음뿐이거나 상태를 안 고른 기록엔 보이지 않는다
+// ponytail: 기록마다 제품 목록을 다시 훑는다(기록 수백·제품 수백까지는 티가 안 남) — 느려지면 개봉일별 개수를 그릴 때 한 번만 세게
 function viewSkin() {
   const year = today().slice(0, 4);
   const fmt = s => new Date(s + 'T00:00').toLocaleDateString('ko-KR', { year: s.startsWith(year) ? undefined : 'numeric', month: 'long', day: 'numeric', weekday: 'short' });
@@ -1005,7 +1016,7 @@ function viewSkin() {
   return `<button id="addLog" class="primary wide" data-act="addLog">＋ 피부 기록</button>` + (logs.length
     ? `<div class="grid">${logs.map(l => `<button id="l-${esc(l.id)}" class="log" data-act="editLog" data-id="${esc(l.id)}">
         ${l.thumb ? `<img src="${esc(l.thumb)}" alt="">` : '<span class="noimg">사진 없음</span>'}<b>${fmt(l.date)}</b>
-        ${l.tags.length ? `<span class="tags">${l.tags.map(t => `<span class="tag">${t}</span>`).join('')}</span>` : ''}${l.memo ? `<small>${esc(l.memo)}</small>` : ''}</button>`).join('')}</div>`
+        ${l.tags.length ? `<span class="tags">${l.tags.map(t => `<span class="tag">${t}</span>`).join('')}</span>` : ''}${l.memo ? `<small>${esc(l.memo)}</small>` : ''}${(n => n ? `<small>🆕 새로 뜯은 제품 ${n}개</small>` : '')(freshOf(l).length)}</button>`).join('')}</div>`
     : '<div class="empty"><p><b>피부 기록이 없어요</b></p><p>사진과 상태를 남겨 두면 변화를 한눈에 볼 수 있어요.</p></div>');
 }
 
@@ -1149,6 +1160,7 @@ async function logForm(l) {
     <button type="button" data-act="analyze" ${src ? '' : 'hidden'}>✨ AI로 피부 상태 읽기</button>
     <p class="ai" role="status" hidden></p>
     <label>날짜 <input type="date" name="date" required max="${today()}" value="${l?.date ?? today()}"></label>
+    ${(f => f.length ? help(`🆕 이 무렵(${FRESH_DAYS}일 안) 새로 뜯은 제품 ${f.length}개`, `${f.map(esc).join(', ')}<br>같은 날 ${BULK}개 이상 개봉으로 적힌 날은 한꺼번에 등록한 날로 보고 뺐어요.`) : '')(l ? freshOf(l) : [])}
     <fieldset><legend>피부 상태 — 가장 최근 기록이 ‘예민’·‘홍조’면 일주일 동안 자동 루틴에서 레티놀·각질케어를 빼요</legend><div class="checks">${TAGS.map(t =>
       `<label class="pill"><input type="checkbox" name="tags" value="${t}" ${l?.tags.includes(t) ? 'checked' : ''}> ${t}</label>`).join('')}</div></fieldset>
     <label>메모 <textarea name="memo" rows="3" maxlength="500" placeholder="예: 턱에 트러블, 볼이 당김">${esc(l?.memo ?? '')}</textarea></label>
@@ -2425,6 +2437,12 @@ function selfTest() {
   const stk = cat => stocked(ss, { cat }, '2026-11-16').map(o => `${o.q.id}@${o.place}`);
   eq([stk('toner'), stk('serum'), stk('makeup'), stocked(cleanState({}), { cat: 'toner' }, '2026-11-16')], [['s1@본가', 's4@자취방'], [], [], []],
     '살 것의 「미개봉 있음」: 같은 종류의 미개봉만(개봉한 것·기한 지난 것·비슷한 종류는 아님), 지금 장소 것 먼저 · 루틴에 안 넣는 종류는 보지 않음');
+  const fs = cleanState({ places: [{ id: 'home', name: '자취방' }, { id: 'b', name: '본가' }],
+    products: [P({ id: 'f1', name: '새 세럼', openedAt: '2026-11-10' }), P({ id: 'f2', name: '오래된 크림', openedAt: '2026-10-01' }), P({ id: 'f3', name: '미개봉', opened: false }), P({ id: 'f4', name: '기록 뒤에 뜯음', openedAt: '2026-11-17' }),
+      ...['2026-11-12'].flatMap(d => [1, 2, 3, 4].map(i => P({ id: 'bk' + i, name: '한꺼번에' + i, openedAt: d }))), P({ id: 'f5', name: '경계', openedAt: '2026-11-02' }), P({ id: 'f6', name: '경계 밖', openedAt: '2026-11-01' })],
+    done: [{ id: 'fd', name: '금방 정리한 토너', openedAt: '2026-11-14', doneAt: '2026-11-15' }], away: { b: { products: [P({ id: 'fa', name: '본가 앰플', openedAt: '2026-11-15' }), P({ id: 'fb', name: '새 세럼', openedAt: '2026-11-08' })] } } });
+  eq([freshAt(fs, '2026-11-16'), freshAt(fs, '2026-10-20'), freshAt(cleanState({}), '2026-11-16')], [['본가 앰플', '금방 정리한 토너', '새 세럼', '경계'], [], []],
+    '피부 기록 무렵 새로 뜯은 제품: 앞 14일 안(그날 포함)·최근 것부터·모든 장소와 다 쓴 제품 포함·같은 이름은 한 번 · 미개봉·기록 뒤에 뜯은 것·같은 날 4개 이상(한꺼번에 등록한 날)은 뺌');
   eq([buyText(cleanState({ ...bs, products: [P({ id: 't1', name: '새 토너', cat: 'toner', opened: false }), P({ id: 't2', name: '또 토너', cat: 'toner', opened: false })] }), '2026-11-16'),
     buyText(cleanState({ done: [{ name: 'x', cat: 'serum', again: true }] }), '2026-11-16')],
     ['「화장대」 살 것 4개\n[본가]\n- 본가 크림 (크림)\n- 본가 토너 (토너·스킨) · 미개봉 있음: 새 토너(본가) 외 1개\n[자취방]\n- 자취방 토너 (토너·스킨) · 미개봉 있음: 새 토너(본가) 외 1개\n- 자취방 세럼 (세럼·앰플)', '「화장대」 살 것 1개\n- x (세럼·앰플)'],
