@@ -174,6 +174,7 @@ form > label.btn, .btn { display: flex; align-items: center; justify-content: ce
   <select id="place" aria-label="장소" title="장소" hidden></select>
   <button data-act="backup" aria-label="설정·백업" title="설정·백업">⋯</button>
 </header>
+<p id="twin" class="note" hidden>⚠ 화장대가 다른 탭·창에도 열려 있어요. 저장이 막힐 수 있으니 하나만 남기고 닫아 주세요.</p>
 <p id="stuck" class="note" role="alert" hidden>⚠ 저장이 끝나지 않고 있어요. 다른 탭·창에 열린 화장대를 모두 닫아 주세요. 지금 새로고침하면 방금 고친 내용이 사라져요.</p>
 <main id="view"></main>
 <nav aria-label="화면">
@@ -1148,6 +1149,7 @@ async function backupForm() {
     <h2>화장품 같이 쓰기${many ? ` · ${esc(state.places.find(p => p.id === state.place).name)}` : ''}</h2>
     ${sync ? `${help(`같이 쓰는 중 · ${esc(syncSaid())}`, `같이 쓰는 것은 ${many ? '지금 고른 장소의 ' : ''}화장품과 다 쓴 제품 목록이에요. 피부 타입·피부 기록·발랐어요 체크·직접 고친 루틴은 기기마다 따로예요. 공유 주소를 아는 사람은 목록을 보고 고칠 수 있어요.`)}
       <button type="button" data-act="syncNow">지금 맞추기</button> <button type="button" data-act="copySync">공유 주소 복사</button> <button type="button" class="danger" data-act="leaveSync">연결 끊기</button>`
+    : syncHeld() ? `<p class="note">${HELD}</p>`
     : `${help('공유 주소를 넣으면 화장품 목록을 다른 기기와 같이 써요', `같이 쓰는 것은 ${many ? '지금 고른 장소의 ' : ''}화장품과 다 쓴 제품 목록이에요${many ? ' (장소마다 따로 연결해요)' : ''}. 피부 타입·피부 기록·발랐어요 체크는 기기마다 따로예요. 처음 만드는 사람은 Firebase Realtime Database 주소를 넣고, 같이 쓸 사람은 받은 공유 주소를 넣어요. 공유 주소를 아는 사람은 목록을 보고 고칠 수 있어요.`)}
       <label>공유 주소 <input name="syncUrl" inputmode="url" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://…"></label><button type="button" data-act="joinSync">연결</button>`}
     ${standalone() ? '' : `<h2>홈 화면에 앱으로 설치</h2>
@@ -1231,7 +1233,7 @@ async function importFile(file) {
     state = next; sync = mine;                // 백업에서 고르고 있던 장소로 바뀐다 — 같이 쓰기 연결도 그 장소 것으로
   };
   // 맞추기와 같은 잠금 안에서 바꾼다 — base 를 비운 뒤 새 목록으로 바뀌기 전에 맞추기가 끼어들면, 옛 목록으로 base 가 다시 채워져 백업에 없는 화장품이 서버에서 지워진다
-  try { await locked(swap); }
+  try { await locked(swap, true); }
   catch (e) { return fail(e); }               // 그때 먼저 써 둔 사진은 다음 시작 때 sweepPhotos 가 치운다
   const keep = new Set(next.logs.map(l => l.id));
   for (const l of old) if (!keep.has(l.id)) idb.del('photo:' + l.id).catch(() => {});
@@ -1259,30 +1261,48 @@ async function moveOld() {
 }
 // 저장소의 sync 칸을 읽고 고치는 일(맞추기·연결·끊기·백업 가져오기)은 모두 이 잠금 안에서 — 창이 여럿이어도 한 번에 하나만 (홈 화면 앱 + 브라우저 탭)
 // ponytail: 잠금이 없는 옛 브라우저(iOS 15.3 이하)에선 그냥 돈다 — 창 여러 개로 같이 쓰기와 백업 가져오기를 동시에 하면 겹칠 수 있다
-const locked = fn => (navigator.locks ? navigator.locks.request('vanity-sync', () => fn()) : Promise.resolve().then(fn));
+// 차례(잠금)를 쥔 다른 탭이 멈춰(폰이 숨은 탭을 얼림) 있으면 이 탭은 끝없이 기다린다 — 맞추기가 조용히 서고, 연결·끊기·백업 가져오기가 먹통처럼 보인다
+// 그래도 넘겨받지(steal) 않는다: 쥔 쪽이 멈춘 것인지 살아서 느린 것인지 가릴 수 없고, 넘겨받아 두 실행이 겹치면 상대의 화장품을 「이 기기에서 지운 것」으로 올릴 수 있다 (11-18 검토)
+// 대신 ① 기다리는 것을 알리고(say · syncSaid · twins) ② 숨은 탭이 차례를 오래 쥐지 않게 한다(화면이 숨으면 받던 요청을 끊는다 — getting)
+// say: 사용자가 누른 일(연결·끊기 등)이면 몇 초 기다렸을 때 기다리는 중이라고 알린다
+let own = 0;                                  // 이 탭이 차례를 쥐고 있는 수 — 내 일(백업 가져오기 등) 뒤에서 기다리는 것을 「다른 탭」 탓으로 알리지 않으려고
+function locked(fn, say) {
+  if (!navigator.locks) return Promise.resolve().then(fn);
+  const note = say && setTimeout(() => own || toast('다른 탭·창이 쓰는 중이라 기다리고 있어요. 오래 걸리면 다른 탭의 화장대를 닫아 주세요.'), 4000);
+  return navigator.locks.request('vanity-sync', () => { clearTimeout(note); own++; return Promise.resolve().then(fn).finally(() => own--); }).finally(() => clearTimeout(note));
+}
 // base 는 읽을 때마다 지금 판의 정리 함수로 다시 정리한다 — 앱이 새 판이 되어 화장품 칸이 늘면 옛 글과 달라져서, 전부 「서버가 바뀐 것」으로 보고 이 기기에서 고친 것을 버리게 된다
 const rebase = (m, clean) => new Map(m instanceof Map ? [...m].flatMap(([id, s]) => { try { return [[id, JSON.stringify(clean({ ...JSON.parse(s), id }))]]; } catch { return []; } }) : []);
 const asSync = v => { const m = SYNC_IN.exec(v?.url ?? ''); return m?.[2] ? { url: `${m[1]}/rooms/${m[2]}`, at: +v.at || 0, base: Object.fromEntries(SYNCED.map(([k, clean]) => [k, rebase(v.base?.[k], clean)])) } : null; };
 const syncWhy = e => (e === 'read' || e?.name === 'TimeoutError' ? '이 기기의 기록을 읽지 못했어요 (잠시 뒤 다시 맞춰요)' : e === 401 || e === 403 ? '이 주소를 읽고 쓸 권한이 없어요 (Firebase 규칙을 확인해 주세요)' : e === 404 ? '없는 주소예요' : e === 'save' ? '이 기기에 저장하지 못했어요 (저장 공간을 확인해 주세요)'
   : e === 'new' ? '같이 쓰는 목록이 새 형식이에요 (앱을 새로고침해 주세요)' : '인터넷 연결을 확인해 주세요');
-const syncSaid = () => (syncErr ? `맞추지 못했어요 — ${syncErr}` : sync.at ? `${new Date(sync.at).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}에 맞췄어요` : '아직 맞추지 않았어요');
+// syncWait = 맞추기가 차례를 기다리기 시작한 때(0 = 기다리지 않음). SYNC_SLOW 넘게 못 받고 있으면 다른 탭이 쥔 채 멈춰 있는 것
+let syncWait = 0;
+const SYNC_SLOW = 10e3, waitedLong = () => !!syncWait && Date.now() - syncWait > SYNC_SLOW, syncHeld = () => !own && waitedLong();      // 이 탭이 쥐고 있는 동안은 다른 탭 탓이 아니다
+const HELD = '다른 탭·창이 쓰는 중이라 기다리고 있어요 — 다른 탭의 화장대를 닫아 주세요';
+const syncSaid = () => (syncHeld() ? HELD : syncErr ? `맞추지 못했어요 — ${syncErr}` : sync.at ? `${new Date(sync.at).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}에 맞췄어요` : '아직 맞추지 않았어요');
 const syncDirty = () => !!sync && SYNCED.some(([k]) => diffList(state[k], sync.base[k]).size);      // 서버에 올릴 것이 있나 (이 기기에서 화장품·다 쓴 기록을 고쳤나)
 // 방 읽기(body 없음) · 고치기(body = 보낼 글: 적힌 자리만 바꾸고 null 은 지운다). 실패는 HTTP 상태 숫자나 통신 오류로 던진다
-async function roomCall(url, body) {
+let getting = null;                           // 지금 받고 있는(GET) 요청 — 화면이 숨으면 끊어서, 숨은 탭이 차례를 쥔 채 얼지 않게 한다 (올리는 중인 것은 짧으니 마저 보낸다)
+async function roomCall(url, body, track) {    // track: 맞추기(syncOnce)의 받기 — 차례를 쥔 채 도는 것이라 숨으면 끊는다. 연결할 때의 받기는 차례 밖이라 그대로 둔다
   const ac = new AbortController(), timer = setTimeout(() => ac.abort(), 20e3);
+  if (track) getting = ac;
   try {
     const res = await fetch(url + (body ? '.json?print=silent' : '.json'), body ? { method: 'PATCH', headers: { 'content-type': 'application/json' }, body, signal: ac.signal } : { cache: 'no-store', signal: ac.signal });
     if (!res.ok) throw res.status;
     return body ? null : await res.json();
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer); if (getting === ac) getting = null; }
 }
+const RUN_MAX = 60e3;                         // 받기는 길어도 20초 — 받은 뒤 보니 이보다 오래 지났으면 도중에 멈췄다(얼었다) 깨어난 것
 async function syncOnce() {
+  const t0 = Date.now();
   const pid = state.place, key = syncKey(pid);
   const cur = asSync(await idb.get(key));     // 늘 저장소에서 읽는다 — 다른 창에서 연결했으면 이 창도 같이 쓰고, 끊었으면 그만둔다 (base 도 다른 창이 맞춘 최신으로)
   if (state.place !== pid) return;            // 읽는 사이 장소를 바꿨다 — 앞 장소의 연결을 새 장소 것으로 삼지 않는다 (syncNow 가 새 장소로 다시 돈다)
   if (!(sync = cur)) return;
-  const room = await roomCall(cur.url);
-  if (document.hidden) throw 'away';          // 답을 기다리는 사이 화면이 숨었다 — 숨은 채 저장소를 쓰지 않는다(얼면 다른 탭의 저장을 막는다). 다시 보일 때 맞춘다
+  const room = await roomCall(cur.url, null, true).catch(e => { throw document.hidden ? 'away' : e; });      // 숨어서 끊은 것(getting)은 실패로 치지 않는다
+  // 멈췄다 깨어나 받은 답은 옛것일 수 있으니 버리고 다시 보일 때 새로 맞춘다
+  if (document.hidden || Date.now() - t0 > RUN_MAX) throw 'away';      // 답을 기다리는 사이 화면이 숨었다 — 숨은 채 저장소를 쓰지 않는다(얼면 다른 탭의 저장을 막는다). 다시 보일 때 맞춘다
   if (!await reload()) throw 'read';          // 다른 창이 그 사이 저장했으면 그 내용으로 — 옛 목록을 견주거나 올리거나 덮어쓰지 않게 (서버 답을 받은 뒤에 읽어야 기다리는 사이 저장된 것까지 본다)
   // 받는 사이 끊었거나·다른 방으로 바꿨거나·장소를 바꿨으면(이 창이든 다른 창이든) 이번 것은 버린다 — 한 장소의 방을 다른 장소 목록과 섞으면 양쪽 목록이 다 망가진다
   if (sync !== cur || state.place !== pid) return;
@@ -1303,9 +1323,17 @@ async function syncOnce() {
 function syncNow() {
   if (!state) return Promise.resolve(false);      // 아직 저장된 내용을 읽기 전 (자체 점검 화면도)
   if (noSave) return syncErr = '저장된 내용을 읽지 못한 상태예요 (새로고침해 주세요)', Promise.resolve(false);
+  if (document.hidden && !syncBusy) return Promise.resolve(false);      // 숨은 채로는 시작하지 않는다 (받다가 얼면 차례를 쥔 채 남는다) — 다시 보일 때 맞춘다
   const gen = placeGen;                       // 도는 사이 장소가 바뀌었으면 한 번 더 (앞 장소 것이 실패했어도 · 갔다가 바로 돌아왔어도 — 그때 비운 sync 를 다시 읽어야 한다)
-  return syncBusy ??= locked(syncOnce).then(() => (syncErr = '', true), e => (e === 'away' || (syncErr = syncWhy(e)), false))      // 숨어서 그만둔 것은 실패로 적지 않는다
-    .then(ok => { syncBusy = null; if (placeGen !== gen || (ok && syncDirty())) syncNow(); return ok; });
+  if (!syncBusy) { syncWait = Date.now(); setTimeout(twins, SYNC_SLOW + 2000); }      // 차례를 오래 못 받으면 알린다 (twins · syncSaid · 설정 창)
+  let waited = false;                         // 오래 기다린 끝에 차례가 왔나 — 그랬으면 끝난 뒤 알림 줄과 열려 있는 설정 창을 바로 고친다
+  return syncBusy ??= locked(() => (waited = waitedLong(), syncWait = 0, syncOnce())).then(() => (syncErr = '', true), e => (e === 'away' || (syncErr = syncWhy(e)), false))      // 숨어서 그만둔 것은 실패로 적지 않는다
+    .then(ok => {
+      syncBusy = null; syncWait = 0;
+      if (waited) { twins(); if (dlg.open && dlg.querySelector('[data-pick=backup]')) backupForm(); }
+      if (placeGen !== gen || (ok && syncDirty())) syncNow();
+      return ok;
+    });
 }
 
 /* ───────── AI 피부 분석 (내 Google Gemini API 무료 키로 이 브라우저에서 바로 호출 — 서버 없음) ───────── */
@@ -1739,7 +1767,7 @@ const ACT = {
         : mine && !confirm(`같이 쓰는 목록(화장품 ${theirs}개)과 이 기기의 화장품 ${mine}개를 합칠까요?\n양쪽에 다 있는 화장품은 같이 쓰는 목록 것으로 맞춰요.`)) return;
       const rec = { url, base: noBase(), at: 0 };
       // 다른 창이 맞추던 것이 끝난 뒤에 적는다 (그 창이 옛 주소를 다시 적지 않게). sync 도 잠금 안에서 바꾼다 — 뒤이어 도는 맞추기가 「주소가 바뀌었다」며 건너뛰지 않게
-      try { await locked(() => idb.set(syncKey(pid), rec).then(() => { if (state.place === pid) sync = rec; })); } catch (e) { return fail(e); }
+      try { await locked(() => idb.set(syncKey(pid), rec).then(() => { if (state.place === pid) sync = rec; }), true); } catch (e) { return fail(e); }
       if (state.place !== pid) return toast('주소는 저장했어요');
       await syncBusy;                         // 이 창이 돌리던 맞추기가 있으면 끝난 뒤에 새로 — 그 결과를 이번 연결의 결과로 알리지 않게
       const ok = await syncNow();
@@ -1763,7 +1791,7 @@ const ACT = {
   async leaveSync() {
     if (!confirm('같이 쓰기를 끊을까요?\n이 기기의 화장품은 그대로 남고, 더는 서로 맞추지 않아요.')) return;
     const pid = state.place;
-    try { await locked(() => idb.del(syncKey(pid))); } catch { return toast('끊지 못했어요. 새로고침 뒤 다시 해 주세요.', true); }      // 맞추던 것(이 창·다른 창)이 끝난 뒤에 지운다 — 그 맞추기가 주소를 다시 적지 않게
+    try { await locked(() => idb.del(syncKey(pid)), true); } catch { return toast('끊지 못했어요. 새로고침 뒤 다시 해 주세요.', true); }      // 맞추던 것(이 창·다른 창)이 끝난 뒤에 지운다 — 그 맞추기가 주소를 다시 적지 않게
     if (state.place === pid) { sync = null; syncErr = ''; }
     backupForm();
   },
@@ -1774,7 +1802,7 @@ const ACT = {
     if (!p || state.places.length < 2) return;
     const n = (id === state.place ? state : state.away[id]).products.length;
     if (!confirm(`‘${p.name}’을(를) 지울까요?\n이 장소의 화장품 ${n}개와 루틴이 이 기기에서 지워져요. 되돌릴 수 없어요.${id === state.place && sync ? '\n같이 쓰는 목록은 지워지지 않고 연결만 끊겨요.' : ''}`)) return;
-    try { await locked(() => idb.del(syncKey(id))); } catch { return toast('지우지 못했어요. 새로고침 뒤 다시 해 주세요.', true); }
+    try { await locked(() => idb.del(syncKey(id)), true); } catch { return toast('지우지 못했어요. 새로고침 뒤 다시 해 주세요.', true); }
     const next = dropPlace(state, id);
     if (next === state) return shut();        // 기다리는 사이 다른 창에서 이미 지웠다
     if (next.place === state.place) { state = next; shut(); commit(); } else toPlace(next);
@@ -1912,13 +1940,26 @@ bc?.addEventListener('message', () => { if (document.hidden) behind = true; else
 // 같이 쓰는 목록은 앱을 열 때·다시 볼 때·인터넷이 돌아올 때·고칠 때 맞춘다
 // ponytail: 켜 둔 동안은 1분마다 받아 온다. 상대가 고친 것이 바로 보여야 하면 Firebase 의 실시간 받기(EventSource)로
 // 다시 읽지 못했으면 날짜 바뀜 처리(저장)는 건너뛴다 — 고친 것도 없는데 「저장하지 못했어요」가 뜨지 않게. 맞추기는 스스로 다시 읽고 판단한다
-const wake = () => reload().then(ok => { if (ok) refresh(); }).then(syncNow);
-document.addEventListener('visibilitychange', () => { if (document.hidden) idb.rest(); else wake(); });
+// 이 앱이 열린 탭·창마다 'vanity-open' 을 같이(shared) 쥐고 있는다 — 다른 곳에도 열려 있는지 세어서 알려 주려고. 얼어 있는 탭도 쥔 채라 세어진다 (저장을 막는 것이 바로 그런 탭이다)
+// 예전 판 탭은 이걸 쥐지 않지만, 그중 먼저 열린 탭이 'vanity-sweep' 을 쥐고 있어서 그것으로 안다 (쥔 쪽이 'vanity-open' 을 쥔 탭이 아니면 예전 판)
+const opened = navigator.locks && location.search !== '?test' ? new Promise(ok => navigator.locks.request('vanity-open', { mode: 'shared' }, () => (ok(), new Promise(() => {}))).catch(ok)) : null;
+opened?.catch(() => {});
+async function twins() {
+  if (!opened) return;
+  try {
+    await opened;                             // 내 것이 잡힌 뒤에 센다
+    const { held = [] } = await navigator.locks.query(), open = new Set(held.filter(l => l.name === 'vanity-open').map(l => l.clientId));
+    const old = held.some(l => l.name === 'vanity-sweep' && !open.has(l.clientId));
+    document.getElementById('twin').hidden = !(open.size > 1 || old || syncHeld());      // 맞추기가 차례를 오래 못 받고 있어도 — 누군가 쥔 채 멈춰 있다
+  } catch {}
+}
+const wake = () => (twins(), setTimeout(twins, 3000), reload().then(ok => { if (ok) refresh(); }).then(syncNow));      // 3초 뒤 한 번 더 — 새로고침 직후엔 앞 문서가 쥐던 것이 아직 안 풀려 잘못 세기도 한다
+document.addEventListener('visibilitychange', () => { if (document.hidden) { getting?.abort(); idb.rest(); } else wake(); });
 addEventListener('pageshow', wake);
 addEventListener('pagehide', () => idb.rest());
 document.addEventListener('freeze', () => idb.rest());      // 폰이 탭을 얼리기 직전
 addEventListener('online', () => document.hidden || syncNow());
-setInterval(() => document.hidden || syncNow(), 60e3);
+setInterval(() => document.hidden || (twins(), syncNow()), 60e3);
 dlg.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.name === 'syncUrl') { e.preventDefault(); ACT.joinSync(); } });      // 주소 칸에서 Enter = 연결 (그냥 두면 창의 첫 버튼이 눌린다)
 
 /* ───────── 자체 점검: index.html?test ───────── */
@@ -2324,6 +2365,7 @@ function selfTest() {
   // 사진 정리는 저장된 상태를 제대로 읽었을 때만(못 읽었는데 지우면 사진을 다 잃는다), 그리고 앱이 이 창 하나에서만 열려 있을 때만 —
   // 처음 연 창이 잠금을 닫힐 때까지 쥐고 있어서, 다른 창이 사진을 쓰는 도중에 지우지 않는다. 잠금을 못 쓰는 브라우저면 정리하지 않는다
   if (loaded) navigator.locks?.request('vanity-sweep', { ifAvailable: true }, lock => lock && sweepPhotos().then(() => new Promise(() => {}))).catch(() => {});
+  twins(); setTimeout(twins, 3000);
 })();
 // 기록이 가리키지 않는 사진(저장·가져오기가 중간에 실패한 흔적)을 치운다. 키 목록 읽기와 지우기를 한 트랜잭션으로
 function sweepPhotos() {
