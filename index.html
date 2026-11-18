@@ -615,6 +615,12 @@ function moveProduct(s, id, to) {
   if (!p || to === s.place || !s.places.some(x => x.id === to)) return s;
   return cleanState({ ...s, products: s.products.filter(x => x !== p), away: { ...s.away, [to]: { ...s.away[to], products: [...(s.away[to]?.products ?? []), { ...p, id: uid(), pair: '' }] } } });
 }
+// 살 것: 「또 살래요」로 남긴 다 쓴 제품을 모든 장소에서 모은다 — 지금 장소 것 먼저, 그다음 장소 순서대로. 장소 안에서는 최근에 다 쓴 것부터
+function buyList(s) {
+  const pick = (list, p) => list.filter(x => x.again).sort((a, b) => b.doneAt.localeCompare(a.doneAt)).map(x => ({ x, pid: p.id, place: p.name }));
+  const here = s.places.find(p => p.id === s.place);
+  return [...pick(s.done, here), ...s.places.filter(p => p !== here).flatMap(p => pick(s.away[p.id]?.done ?? [], p))];
+}
 const countAll = s => s.products.length + Object.values(s.away).reduce((n, a) => n + a.products.length, 0);      // 모든 장소의 화장품 수
 
 /* ───────── 같이 쓰기 — 계산 (화장품·다 쓴 제품 목록만 Firebase 주소 한 곳에 두고 여러 기기가 맞춘다. 피부 타입·피부 기록·체크·루틴은 기기마다 따로) ───────── */
@@ -773,9 +779,9 @@ function leftPlace() {
   placeGen++; sync = null; syncErr = ''; editing = false; filter = 'all'; query = ''; queue = []; fill = lastCheck = checkBack = rebuyFor = null; lastAdvice = '';
   if (dlg.open) dlg.close();
 }
-function toPlace(next) {                      // 장소 바꾸기·추가·지우기의 끝 (next = goPlace·addPlace·dropPlace 가 돌려준 것. 그대로면 아무것도 안 한다)
+function toPlace(next, show) {                      // 장소 바꾸기·추가·지우기의 끝 (next = goPlace·addPlace·dropPlace 가 돌려준 것. 그대로면 아무것도 안 한다)
   if (next === state) return;
-  state = next; leftPlace(); commit(); syncNow(); scrollTo(0, 0);
+  state = next; leftPlace(); if (show) filter = show; commit(); syncNow(); scrollTo(0, 0);      // show = 바꾼 뒤 화장품 탭에서 보여 줄 걸러 보기 (살 것에서 그 장소로 갈 때)
 }
 // 발랐어요 체크 정리: 한 달 지난 날과 아침·저녁 모두 빈 날은 지운다 (체크를 바꿀 때마다)
 function sweepTicks() { const all = state.ticks; for (const k in all) if (daysBetween(k, today()) > 31 || !(all[k].am.length || all[k].pm.length)) delete all[k]; }
@@ -928,6 +934,8 @@ function sortRows(rows, by) {
 }
 function viewProducts() {
   if (filter === 'done' && !state.done.length) filter = 'all';
+  const buy = buyList(state);                 // 모든 장소의 살 것 — 종류 걸러 보기는 적용하지 않는다(다른 장소에만 있는 종류는 고를 수 없어 빈 화면이 된다. 몇 개 안 되는 목록이라 다 보여 준다)
+  if (filter === 'buy' && !buy.length) filter = 'all';
   const now = today(), inWeek = new Set(state.routine.days.flatMap(d => [...d.am, ...d.pm]));
   // 루틴 상태: sealed 미개봉 · skip 루틴에 안 넣는 종류 · in 이번 주 루틴에 있음 · out 개봉했는데 없음(만료·자리 부족·예민한 주·직접 고친 루틴)
   const rows = state.products.map((p, i) => ({ p, i, l: left(p, now), e: expiryOf(p), k: knownExpiry(p), r: !p.opened ? 'sealed' : inWeek.has(p.id) ? 'in' : !CATS[p.cat][1] || p.when === 'off' ? 'skip' : 'out' }));      // 직접 고친 루틴에 손으로 넣은 것은 종류·쓰는 때와 상관없이 「루틴 포함」
@@ -937,6 +945,7 @@ function viewProducts() {
   const F = { all: ['전체', () => true], out: ['루틴에 없음', r => r.r === 'out'], sealed: ['미개봉', r => r.r === 'sealed'], soon: ['임박·만료', r => r.l !== null && r.l <= SOON], none: ['기한 모름', r => !r.k] };      // 추정 기한만 있는 것도 실제 기한은 모름
   const chips = Object.entries(F).map(([k, [name, fn]]) =>
     `<button id="f-${k}" class="chip" data-act="filter" data-f="${k}" aria-pressed="${k === filter}">${name} ${shown.filter(fn).length}</button>`).join('')
+    + (buy.length ? `<button id="f-buy" class="chip" data-act="filter" data-f="buy" aria-pressed="${filter === 'buy'}">살 것 ${buy.length}</button>` : '')
     + (state.done.length ? `<button id="f-done" class="chip" data-act="filter" data-f="done" aria-pressed="${filter === 'done'}">다 쓴 제품 ${done.length}</button>` : '');
   const kindOpts = ORDER.map(c => [c, state.products.filter(p => p.cat === c).length + (filter === 'done' ? state.done.filter(x => x.cat === c).length : 0)])
     .filter(([c, n]) => n || c === kindF).map(([c, n]) => `<option value="${c}" ${c === kindF ? 'selected' : ''}>${CATS[c][0]}</option>`).join('');
@@ -951,22 +960,29 @@ function viewProducts() {
       <small>${CATS[x.cat][0]} · ${x.openedAt ? `${x.openedAt} 개봉 → ` : ''}${x.doneAt} 다 씀${x.openedAt ? ` (${daysBetween(x.openedAt, x.doneAt) + 1}일)` : ''}</small><span></span>
       <span class="acts"><button data-act="again" data-id="${esc(x.id)}" aria-pressed="${x.again}">${x.again ? '또 살래요 해제' : '또 살래요'}</button>
         <button data-act="rebuy" data-id="${esc(x.id)}">다시 샀어요 · 등록</button><button class="danger" data-act="forget" data-id="${esc(x.id)}">기록 지우기</button></span></article>`).join('');
-  const cards = filter === 'done' ? doneCards() : sortRows(shown.filter(F[filter][1]), sortBy)
+  // 살 것: 모든 장소의 「또 살래요」를 한 화면에 — 다른 장소 것은 장소 이름을 달고, 그 장소로 가서 등록하게 한다 (등록은 지금 고른 장소에 들어가니까)
+  const buyCards = () => buy.map(({ x, pid, place }) => `<article class="card prod" data-q="${esc(norm(x.name + CATS[x.cat][0] + x.actives.map(a => ACTIVES[a]).join('') + place))}">
+      <span class="name">${esc(x.name)}</span>${pid === state.place ? '<span></span>' : `<span class="tag">${esc(place)}</span>`}
+      <small>${CATS[x.cat][0]} · ${x.doneAt} 다 씀</small><span></span>
+      <span class="acts">${pid === state.place ? `<button data-act="again" data-id="${esc(x.id)}" aria-pressed="true">또 살래요 해제</button><button data-act="rebuy" data-id="${esc(x.id)}">다시 샀어요 · 등록</button>`
+        : `<button data-act="buyAt" data-id="${esc(pid)}" aria-label="${esc(x.name)} — ${esc(place)}(으)로 가서 등록">${esc(place)}(으)로 가서 등록</button>`}</span></article>`).join('');
+  const cards = filter === 'buy' ? buyCards() : filter === 'done' ? doneCards() : sortRows(shown.filter(F[filter][1]), sortBy)
     .map(({ p, l, e, k, r }) => `<article class="card prod" data-q="${esc(norm(p.name + sub(p)))}">
       <button id="p-${esc(p.id)}" class="name" data-act="editProduct" data-id="${esc(p.id)}">${esc(p.name)}</button>${badge(l, e && !k)}
       <small>${sub(p)} · ${p.opened ? `개봉 ${p.openedAt}` : '미개봉'}${e ? `<br>${expiryNote(p)}` : ''}</small>
       ${r === 'sealed' ? `<button id="open-${esc(p.id)}" class="chip" data-act="open" data-id="${esc(p.id)}" aria-label="${esc(p.name)} 오늘 개봉" title="눌러서 오늘 개봉으로">미개봉</button>`
         : `<span class="tag ${r === 'in' ? 'on' : r === 'out' ? 'warn' : ''}">${{ in: '루틴 포함', out: '루틴에 없음', skip: '루틴 제외' }[r]}</span>`}</article>`).join('');
-  return `<button id="add" class="primary wide" data-act="add">＋ 직접 등록</button>` + (state.products.length || state.done.length
+  return `<button id="add" class="primary wide" data-act="add">＋ 직접 등록</button>` + (state.products.length || state.done.length || filter === 'buy'
     ? `<input type="search" id="q" class="search" placeholder="🔍 이름·종류·성분으로 찾기" aria-label="화장품 찾기" autocomplete="off" value="${esc(query)}">`
       + `<div class="filters" role="group" aria-label="걸러 보기">${chips}</div>`
-      + (kinds ? `<p class="muted kinds">${kinds}</p>` : '')
-      + (state.products.length + state.done.length > 1 ? `<div class="sortbar"><label><span>종류</span><select id="kind"><option value="">전체</option>${kindOpts}</select></label>`
+      + (kinds && filter !== 'buy' ? `<p class="muted kinds">${kinds}</p>` : '')
+      + (state.products.length + state.done.length > 1 && filter !== 'buy' ? `<div class="sortbar"><label><span>종류</span><select id="kind"><option value="">전체</option>${kindOpts}</select></label>`
         + (filter !== 'done' ? `<label><span>정렬</span><select id="sort">${Object.entries(SORTS)
         .map(([k, n]) => `<option value="${k}" ${k === sortBy ? 'selected' : ''}>${n}</option>`).join('')}</select></label>` : '') + '</div>' : '')
       + ((n => n && (filter === 'all' || filter === 'none') ? `<button id="fill" class="wide" data-act="fillNext">📷 기한 모르는 ${n}개 하나씩 채우기</button>` : '')(rows.filter(r => !r.k).length))
       + (cards ? cards + '<p id="noHit" class="empty" hidden>찾는 화장품이 없어요. 띄어쓰기 없이 이름 일부만 쳐 보세요.</p>' : '<p class="empty">해당하는 화장품이 없어요</p>')
-    : '<div class="empty"><p><b>등록된 화장품이 없어요</b></p><p>「＋ 직접 등록」에서 사진으로 채우면 AI가 이름·종류·기한을 읽어 줘요. 한 장에 여러 개를 찍어도 돼요. 뒷면(전성분·사용기한)이 보이게 찍으면 성분까지 채워요.<br>이름만 적어도 종류를 골라 줘요.</p></div>');
+    : '<div class="empty"><p><b>등록된 화장품이 없어요</b></p><p>「＋ 직접 등록」에서 사진으로 채우면 AI가 이름·종류·기한을 읽어 줘요. 한 장에 여러 개를 찍어도 돼요. 뒷면(전성분·사용기한)이 보이게 찍으면 성분까지 채워요.<br>이름만 적어도 종류를 골라 줘요.</p></div>'
+      + (buy.length ? `<button id="f-buy" class="wide" data-act="filter" data-f="buy">🛒 다른 장소의 살 것 ${buy.length}개 보기</button>` : ''));
 }
 
 function viewSkin() {
@@ -1657,6 +1673,7 @@ const ACT = {
   ago(d) { const el = dlg.querySelector('[name=openedAt]'); if (el) { el.value = agoDate(today(), +d.d, +d.m); el.dispatchEvent(new Event('input', { bubbles: true })); } },
   add() { queue = []; fill = null; rebuyFor = null; productForm(); },
   again(d) { const x = state.done.find(x => x.id === d.id); if (x) { x.again = !x.again; commit(); } },
+  buyAt(d) { tab = 'products'; toPlace(goPlace(state, d.id), 'buy'); },      // 살 것: 다른 장소 것은 그 장소로 가서(살 것 목록 그대로) 「다시 샀어요 · 등록」
   rebuy(d) {                                  // 다시 샀어요 → 그 제품 정보로 채운 새 등록 창 (미개봉으로)
     const x = state.done.find(x => x.id === d.id); if (!x) return;
     queue = []; fill = null; rebuyFor = x.id;
@@ -2357,6 +2374,14 @@ function selfTest() {
     moveProduct(mvS, 'a', 'home') === mvS, moveProduct(mvS, 'a', 'nope') === mvS, moveProduct(mvS, 'ghost', born) === mvS, mvd.done.length, mvd.skin.type],
     ['c', '', { am: ['c'], pm: [] }, { '2026-11-16': { am: ['c'], pm: [] } }, ['본가 크림', '토너'], true, srcRest, true, true, true, true, 1, 'oily'],
     '제품을 다른 장소로 옮기기: 이 장소의 루틴·체크·먼저 바를 제품에서 빠지고 받는 쪽에 새 id 로 개봉일·기한·설정 그대로 · 지금 장소·없는 장소·없는 제품이면 그대로');
+  // 살 것: 모든 장소의 「또 살래요」를 모은다
+  const bs = cleanState({ places: [{ id: 'home', name: '자취방' }, { id: 'b', name: '본가' }, { id: 'c', name: '빈 곳' }], place: 'b',
+    done: [{ id: 'd1', name: '본가 토너', cat: 'toner', doneAt: '2026-11-10', again: true }, { id: 'd2', name: '본가 크림', cat: 'cream', doneAt: '2026-11-15', again: true }, { id: 'd3', name: '안 살 것', cat: 'toner', doneAt: '2026-11-16' }],
+    away: { home: { done: [{ id: 'h1', name: '자취방 세럼', cat: 'serum', doneAt: '2026-11-01', again: true }, { id: 'h2', name: '자취방 토너', cat: 'toner', doneAt: '2026-11-12', again: true }] } } });
+  const bl = s => buyList(s).map(o => `${o.x.name}@${o.place}`);
+  eq([bl(bs), bl(goPlace(bs, 'home')).slice(0, 2), bl(cleanState({ done: [{ name: 'x', again: true }] })), buyList(cleanState({})).length, bs.done.map(x => x.id).join()],
+    [['본가 크림@본가', '본가 토너@본가', '자취방 토너@자취방', '자취방 세럼@자취방'], ['자취방 토너@자취방', '자취방 세럼@자취방'], ['x@집'], 0, 'd1,d2,d3'],
+    '살 것: 「또 살래요」만, 지금 장소 것 먼저·장소마다 최근에 다 쓴 것부터 · 장소가 하나여도 동작 · 받은 목록의 순서를 바꾸지 않음');
   const odd = cleanState({ products: [P({ id: 'a' })], places: [{ id: 'p1' }, { id: 'p1', name: '겹침' }, { name: 'id 없음' }, { id: 'p2', name: '둘째' }, ...Array.from({ length: 9 }, (_, i) => ({ id: 'x' + i, name: 'n' }))],
     place: 'lost', away: { p1: { products: [P({ id: 'z' })] }, p2: { products: [P({ id: 'q', pair: 'a' }), { id: 'bad' }] }, ghost: { products: [P({ id: 'g' })] } } });
   const noAt = cleanState({ products: [P({ id: 'a' })], places: [{ id: 'p1', name: '첫째' }, { id: 'p2', name: '둘째' }], away: { p2: { products: [P({ id: 'q' })] } } });
