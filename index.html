@@ -895,7 +895,8 @@ function viewRoutine() {
   const gone = state.products.filter(p => p.opened && expired(p, now)).length;
   const guessGone = state.products.filter(p => p.opened && expired(p, now) && !knownExpiry(p)).length;
   if (gone) notes.push(note(`기한 지난 개봉 제품 ${gone}개${R.manual ? '' : ' — 루틴에서 뺐어요'}`,
-    guessGone ? `그중 ${guessGone}개는 종류별 보통 사용기간으로 잡은 추정 기한이에요 — 아직 괜찮으면 제품에 실제 기한을 적어 주세요.` : ''));
+    guessGone ? `그중 ${guessGone}개는 종류별 보통 사용기간으로 잡은 추정 기한이에요 — 아직 괜찮으면 제품에 실제 기한을 적어 주세요.` : '',
+    '<button data-act="tab" data-tab="products" data-f="soon">보러 가기</button>'));      // 화장품 탭의 「임박·만료」로 — 거기서 눌러 다 썼어요·기한 고치기
   // 이번 주에 빠진 제품은 펼치면 언제 다시 들어오는지도 — 직접 넣을지 기다릴지 정하기 쉽게 (자동 루틴만: 직접 고친 루틴은 돌아가지 않는다)
   const back = ps => { const t = nextTurns(state, ps.map(p => p.id), now); return `다시 들어오는 때 (지금 제품·설정 그대로면)<br>${ps.map(p => `· ${esc(p.name)} — ${turnName(t.get(p.id))}`).join('<br>')}<br>`; };
   const restPs = missing(state, now, true), rest = restPs.map(p => esc(p.name)).join(', ');      // 자동 루틴일 때만 나온다
@@ -1698,7 +1699,11 @@ async function fillFromPhoto(form, file) {
 // d = 누른 버튼의 값. 제품뿐 아니라 메모 글·쓰는 때까지 같은 버튼만 — 한 제품에 다른 메모 제안이 둘이면 누르지 않은 쪽은 그대로 둔다
 const applied = (d, label) => { for (const b of dlg.querySelectorAll(`[data-act="${d.act}"]`)) if (['id', 'memo', 'when', 'rest'].every(k => b.dataset[k] === d[k])) { b.disabled = true; b.textContent = label; } };
 const ACT = {
-  tab(d) { tab = d.tab; editing = false; render(); scrollTo(0, 0); },
+  tab(d) {
+    tab = d.tab; editing = false;
+    if (Object.hasOwn(d, 'f')) { filter = d.f; kindF = query = ''; focusId = 'f-' + d.f; }      // 안내의 「보러 가기」: 그 걸러 보기로 바로 — 안내가 말한 제품이 다 보이게 고른 종류·찾던 글은 푼다(기억해 둔 종류는 그대로 — 다음에 열면 돌아온다)
+    render(); scrollTo(0, 0);
+  },
   day(d) { dayIdx = +d.i; render(); },
   edit() { editing = !editing; render(); },
   regen() {
