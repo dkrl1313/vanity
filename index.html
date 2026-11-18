@@ -616,10 +616,15 @@ function moveProduct(s, id, to) {
   return cleanState({ ...s, products: s.products.filter(x => x !== p), away: { ...s.away, [to]: { ...s.away[to], products: [...(s.away[to]?.products ?? []), { ...p, id: uid(), pair: '' }] } } });
 }
 // 살 것: 「또 살래요」로 남긴 다 쓴 제품을 모든 장소에서 모은다 — 지금 장소 것 먼저, 그다음 장소 순서대로. 장소 안에서는 최근에 다 쓴 것부터
+const shelves = (s, key) => { const here = s.places.find(p => p.id === s.place); return [[here, s[key]], ...s.places.filter(p => p !== here).map(p => [p, s.away[p.id]?.[key] ?? []])]; };      // [장소, 그 장소의 목록(products·done)] — 지금 장소 먼저
 function buyList(s) {
-  const pick = (list, p) => list.filter(x => x.again).sort((a, b) => b.doneAt.localeCompare(a.doneAt)).map(x => ({ x, pid: p.id, place: p.name }));
-  const here = s.places.find(p => p.id === s.place);
-  return [...pick(s.done, here), ...s.places.filter(p => p !== here).flatMap(p => pick(s.away[p.id]?.done ?? [], p))];
+  return shelves(s, 'done').flatMap(([p, list]) => list.filter(x => x.again).sort((a, b) => b.doneAt.localeCompare(a.doneAt)).map(x => ({ x, pid: p.id, place: p.name })));
+}
+// 살 것 x 와 같은 종류인데 아직 안 뜯은(기한 안 지난) 제품 — 이미 사 둔 것을 또 사지 않게 알려 준다. 지금 장소 것 먼저
+// ponytail: 종류만 본다(이름·성분은 안 따짐 — 뭐가 있는지 이름을 보여 주고 판단은 사용자가). 루틴에 안 넣는 종류(메이크업·바디·기타)는 안의 물건이 제각각이라 보지 않는다(alternatives 와 같음)
+function stocked(s, x, now) {
+  if (!CATS[x.cat][1]) return [];
+  return shelves(s, 'products').flatMap(([p, list]) => list.filter(q => q.cat === x.cat && !q.opened && !expired(q, now)).map(q => ({ q, pid: p.id, place: p.name })));
 }
 const countAll = s => s.products.length + Object.values(s.away).reduce((n, a) => n + a.products.length, 0);      // 모든 장소의 화장품 수
 
@@ -961,9 +966,10 @@ function viewProducts() {
       <span class="acts"><button data-act="again" data-id="${esc(x.id)}" aria-pressed="${x.again}">${x.again ? '또 살래요 해제' : '또 살래요'}</button>
         <button data-act="rebuy" data-id="${esc(x.id)}">다시 샀어요 · 등록</button><button class="danger" data-act="forget" data-id="${esc(x.id)}">기록 지우기</button></span></article>`).join('');
   // 살 것: 모든 장소의 「또 살래요」를 한 화면에 — 다른 장소 것은 장소 이름을 달고, 그 장소로 가서 등록하게 한다 (등록은 지금 고른 장소에 들어가니까)
+  const stock = x => (st => st.length ? `<br><span class="tag warn">미개봉 있음</span> ${esc(st[0].q.name)}${st[0].pid === state.place ? '' : ` (${esc(st[0].place)})`}${st.length > 1 ? ` 외 ${st.length - 1}개` : ''}` : '')(stocked(state, x, now));
   const buyCards = () => buy.map(({ x, pid, place }) => `<article class="card prod" data-q="${esc(norm(x.name + CATS[x.cat][0] + x.actives.map(a => ACTIVES[a]).join('') + place))}">
       <span class="name">${esc(x.name)}</span>${pid === state.place ? '<span></span>' : `<span class="tag">${esc(place)}</span>`}
-      <small>${CATS[x.cat][0]} · ${x.doneAt} 다 씀</small><span></span>
+      <small>${CATS[x.cat][0]} · ${x.doneAt} 다 씀${stock(x)}</small><span></span>
       <span class="acts">${pid === state.place ? `<button data-act="again" data-id="${esc(x.id)}" aria-pressed="true">또 살래요 해제</button><button data-act="rebuy" data-id="${esc(x.id)}">다시 샀어요 · 등록</button>`
         : `<button data-act="buyAt" data-id="${esc(pid)}" aria-label="${esc(x.name)} — ${esc(place)}(으)로 가서 등록">${esc(place)}(으)로 가서 등록</button>`}</span></article>`).join('');
   const cards = filter === 'buy' ? buyCards() : filter === 'done' ? doneCards() : sortRows(shown.filter(F[filter][1]), sortBy)
@@ -2382,6 +2388,12 @@ function selfTest() {
   eq([bl(bs), bl(goPlace(bs, 'home')).slice(0, 2), bl(cleanState({ done: [{ name: 'x', again: true }] })), buyList(cleanState({})).length, bs.done.map(x => x.id).join()],
     [['본가 크림@본가', '본가 토너@본가', '자취방 토너@자취방', '자취방 세럼@자취방'], ['자취방 토너@자취방', '자취방 세럼@자취방'], ['x@집'], 0, 'd1,d2,d3'],
     '살 것: 「또 살래요」만, 지금 장소 것 먼저·장소마다 최근에 다 쓴 것부터 · 장소가 하나여도 동작 · 받은 목록의 순서를 바꾸지 않음');
+  const ss = cleanState({ places: [{ id: 'home', name: '자취방' }, { id: 'b', name: '본가' }], place: 'b',
+    products: [P({ id: 's1', cat: 'toner', opened: false }), P({ id: 's2', cat: 'toner' }), P({ id: 's3', cat: 'makeup', opened: false })],
+    away: { home: { products: [P({ id: 's4', cat: 'toner', opened: false }), P({ id: 's5', cat: 'toner', opened: false, expiry: '2026-01-01' }), P({ id: 's6', cat: 'essence', opened: false })] } } });
+  const stk = cat => stocked(ss, { cat }, '2026-11-16').map(o => `${o.q.id}@${o.place}`);
+  eq([stk('toner'), stk('serum'), stk('makeup'), stocked(cleanState({}), { cat: 'toner' }, '2026-11-16')], [['s1@본가', 's4@자취방'], [], [], []],
+    '살 것의 「미개봉 있음」: 같은 종류의 미개봉만(개봉한 것·기한 지난 것·비슷한 종류는 아님), 지금 장소 것 먼저 · 루틴에 안 넣는 종류는 보지 않음');
   const odd = cleanState({ products: [P({ id: 'a' })], places: [{ id: 'p1' }, { id: 'p1', name: '겹침' }, { name: 'id 없음' }, { id: 'p2', name: '둘째' }, ...Array.from({ length: 9 }, (_, i) => ({ id: 'x' + i, name: 'n' }))],
     place: 'lost', away: { p1: { products: [P({ id: 'z' })] }, p2: { products: [P({ id: 'q', pair: 'a' }), { id: 'bad' }] }, ghost: { products: [P({ id: 'g' })] } } });
   const noAt = cleanState({ products: [P({ id: 'a' })], places: [{ id: 'p1', name: '첫째' }, { id: 'p2', name: '둘째' }], away: { p2: { products: [P({ id: 'q' })] } } });
