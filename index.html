@@ -174,6 +174,7 @@ form > label.btn, .btn { display: flex; align-items: center; justify-content: ce
   <select id="place" aria-label="장소" title="장소" hidden></select>
   <button data-act="backup" aria-label="설정·백업" title="설정·백업">⋯</button>
 </header>
+<p id="stuck" class="note" role="alert" hidden>⚠ 저장이 끝나지 않고 있어요. 다른 탭·창에 열린 화장대를 모두 닫아 주세요. 지금 새로고침하면 방금 고친 내용이 사라져요.</p>
 <main id="view"></main>
 <nav aria-label="화면">
   <button data-act="tab" data-tab="routine">루틴</button>
@@ -593,6 +594,13 @@ function dropPlace(s, id) {                   // 장소 지우기 — 마지막 
   if (s.place === id) s = goPlace(s, s.places.find(p => p.id !== id).id);
   return cleanState({ ...s, places: s.places.filter(p => p.id !== id) });
 }
+// 제품을 지금 장소에서 다른 장소(to)로 옮긴다: 이 장소의 루틴·체크·먼저 바를 제품에서 빠지고, 받는 쪽 목록에 들어간다 (개봉·기한·설정은 그대로). 없는 제품·장소·지금 장소면 그대로 돌려준다
+// id 는 새로 준다 — 두 장소에 같은 id 가 있으면(백업을 합친 경우) 받는 쪽에서 한쪽이 버려진다. 먼저 바를 제품(pair)은 이 장소 것을 가리키니 비운다
+function moveProduct(s, id, to) {
+  const p = s.products.find(x => x.id === id);
+  if (!p || to === s.place || !s.places.some(x => x.id === to)) return s;
+  return cleanState({ ...s, products: s.products.filter(x => x !== p), away: { ...s.away, [to]: { ...s.away[to], products: [...(s.away[to]?.products ?? []), { ...p, id: uid(), pair: '' }] } } });
+}
 const countAll = s => s.products.length + Object.values(s.away).reduce((n, a) => n + a.products.length, 0);      // 모든 장소의 화장품 수
 
 /* ───────── 같이 쓰기 — 계산 (화장품·다 쓴 제품 목록만 Firebase 주소 한 곳에 두고 여러 기기가 맞춘다. 피부 타입·피부 기록·체크·루틴은 기기마다 따로) ───────── */
@@ -653,13 +661,29 @@ const idb = (() => {
     r.onsuccess = () => { r.result.onclose = () => (open = null); ok(r.result); };
     r.onerror = () => no(r.error);
   });
-  const run = (mode, fn) => conn().then(db => new Promise((ok, no) => {
-    const t = db.transaction('kv', mode), q = fn(t.objectStore('kv'));
-    t.oncomplete = () => ok(q.result);
-    t.onerror = t.onabort = () => no(t.error);
-  })).catch(e => { open = null; throw e; });
-  return { get: k => run('readonly', s => s.get(k)), set: (k, v) => run('readwrite', s => s.put(v, k)), del: k => run('readwrite', s => s.delete(k)),
-    run };
+  // 다른 탭·창에 열린 이 앱이 저장소 작업을 끝내지 못한 채 멈춰 있으면(폰이 숨은 탭을 작업 도중에 얼린 경우), 이 탭의 쓰기는 오류도 없이 끝나지 않고 그 뒤 읽기까지 줄줄이 멈춘다
+  // (11-18 실제 유실: 등록한 화장품이 목록엔 보이는데 저장이 안 끝나 새로고침 뒤 사라지고, ⋯ 메뉴도 안 열림)
+  // → 쓰기가 SLOW 넘게 안 끝나면 화면에 알리고(stuck — 끝나면 지운다), 읽기는 WAIT 까지만 기다리고 그만둔다. 쓰기는 그만두지 않는다(막은 쪽이 풀리면 그때 들어간다)
+  const SLOW = 4000, WAIT = 6000;
+  let late = 0;
+  const run = (mode, fn, again = true) => {
+    let slow = false;
+    const timer = mode === 'readwrite' && setTimeout(() => { slow = true; if (!late++) stuck(true); }, SLOW);
+    return conn().then(db => new Promise((ok, no) => {
+      const t = db.transaction('kv', mode), q = fn(t.objectStore('kv'));
+      t.oncomplete = () => ok(q.result);
+      t.onerror = t.onabort = () => no(t.error);
+    })).catch(e => {
+      open = null;
+      if (again && e?.name === 'InvalidStateError') return run(mode, fn, false);      // 닫히는 중인 연결을 잡았으면(숨을 때 닫는다 — rest) 새 연결로 한 번 더
+      throw e;
+    }).finally(() => { clearTimeout(timer); if (slow && !--late) stuck(false); });
+  };
+  const quick = p => new Promise((ok, no) => { const t = setTimeout(no, WAIT, Object.assign(new Error('저장소가 응답하지 않아요'), { name: 'TimeoutError' })); p.then(ok, no).finally(() => clearTimeout(t)); });
+  // 화면이 숨으면 연결을 놓는다 — 하던 작업은 마저 끝나고, 다음에 쓸 때 다시 연다. 숨은 탭이 다른 탭의 저장을 막는 쪽이 되지 않게
+  const rest = () => { const p = open; open = null; p?.then(db => db.close()).catch(() => {}); };
+  return { get: k => quick(run('readonly', s => s.get(k))), set: (k, v) => run('readwrite', s => s.put(v, k)), del: k => run('readwrite', s => s.delete(k)),
+    run, rest };
 })();
 
 /* ───────── 화면 ───────── */
@@ -690,15 +714,27 @@ const fail = e => toast(`저장하지 못했어요. 저장 공간이나 브라�
 // ponytail: 바뀔 때마다 state 를 통째로 다시 쓴다(썸네일 포함). 피부 기록이 수백 건을 넘어 느려지면 기록을 키별로 쪼갤 것
 // noSave: 시작할 때 저장된 내용을 못 읽었으면 쓰지 않는다 — 빈 상태로 기존 기록을 덮어쓰지 않게
 // 다른 창(홈 화면 앱·브라우저 탭·화면 분할)이 저장하면 알린다 — 오래된 창이 새 기록을 덮어쓰지 않게 (받는 쪽은 reload)
-const bc = 'BroadcastChannel' in window ? new BroadcastChannel('vanity') : null;
+// 채널 이름은 'vanity2' — 예전 판이 열려 있는 숨은 탭은 'vanity' 알림을 받을 때마다 저장소를 읽었고, 그러다 폰이 그 탭을 얼리면 이 탭의 저장이 막혔다. 이름이 달라 그 탭들은 더는 깨어나지 않는다
+const bc = 'BroadcastChannel' in window ? new BroadcastChannel('vanity2') : null;
 // 저장소 칸 이름. 장소가 생기기 전 판은 기록을 'state', 같이 쓰기를 'sync' 칸에 뒀다 — 새 판은 칸을 따로 쓰고(STATE_KEY·syncKey) 처음 열 때 한 번 옮겨 온다 (moveOld)
 // 같은 칸을 쓰면, 옛 판이 아직 떠 있는 창(홈 화면 앱을 켜 둔 채 브라우저로 새 판을 연 경우)이 새 기록을 장소를 모른 채 통째로 다시 써서 다른 장소 것을 지우고,
 // 엉뚱한 장소 목록을 같이 쓰는 방에 올려 상대의 목록까지 지운다. 칸이 다르면 옛 창은 옛 사본만 고치고 서버는 건드리지 못한다
 const STATE_KEY = 'state2';
 let seen;                                     // 이 창이 마지막으로 저장소와 맞춘 내용 — 저장소가 그대로면 reload 는 다시 그리지 않는다
 // ponytail: 저장할 때마다 state 를 통째로 글로 한 번 더 만든다(썸네일 포함). 피부 기록이 수백 건이라 느려지면 저장소에 번호(rev) 칸을 따로 두고 그것만 비교할 것
+// behind: 저장소의 최신 내용을 아직 못 읽었다(다시 읽기가 실패했거나, 숨은 사이 다른 창이 저장했다). 이 동안은 그대로 쓰지 않는다 — 옛 내용으로 다른 창이 고친 것을 덮어쓰게 된다
+// 먼저 다시 읽어서, 저장소가 그대로였으면 이어서 저장하고, 다른 창 것으로 바뀌었으면 방금 고친 것은 버려졌다고 알린다. 끝내 못 읽으면 저장하지 않고 알린다
+let behind = false;
 const save = () => {
   if (noSave) return Promise.resolve(false);
+  if (behind) {
+    const was = state;
+    return reload().then(ok => {
+      if (!ok) return toast('저장소를 읽지 못해 방금 고친 내용을 저장하지 못했어요. 잠시 뒤 다시 해 주세요.', true), false;
+      if (state !== was) return toast('다른 창에서 바뀐 내용을 불러왔어요. 방금 고친 것은 다시 해 주세요.', true), false;
+      return JSON.stringify(state) !== seen ? save() : true;
+    });
+  }
   const s = JSON.stringify(state);
   return idb.set(STATE_KEY, state).then(() => (seen = s, bc?.postMessage('saved'), true), e => (fail(e), false));
 };
@@ -729,6 +765,7 @@ function toPlace(next) {                      // 장소 바꾸기·추가·지�
 }
 // 발랐어요 체크 정리: 한 달 지난 날과 아침·저녁 모두 빈 날은 지운다 (체크를 바꿀 때마다)
 function sweepTicks() { const all = state.ticks; for (const k in all) if (daysBetween(k, today()) > 31 || !(all[k].am.length || all[k].pm.length)) delete all[k]; }
+function stuck(on) { const el = document.getElementById('stuck'); if (el) el.hidden = !on; }      // 저장이 오래 안 끝날 때의 알림 줄 (idb.run 이 켜고 끈다)
 function toast(msg, bad) {
   const t = $('#toast');
   if (!t.showPopover) return alert(msg);      // popover 가 없는 옛 브라우저 (iOS 16 이하)
@@ -771,7 +808,10 @@ function applySearch() {
 function viewRoutine() {
   const now = today(), R = state.routine, byId = new Map(state.products.map(p => [p.id, p])), calmNow = !R.manual && isCalm(state.logs, now);
   if (!R.manual && !state.products.some(p => p.opened))
-    return `<div class="empty"><p><b>아직 루틴이 비어 있어요</b></p><p>개봉한 화장품을 등록하면<br>월~일 아침·저녁 루틴이 자동으로 짜여요.</p>
+    // 등록은 했는데 모두 미개봉이면 그렇게 말한다 — 「등록하러 가기」만 보이면 등록한 것이 사라진 줄 안다 (11-18: 새 장소에 미개봉 선크림을 등록하고 새로고침)
+    return state.products.length ? `<div class="empty"><p><b>아직 루틴이 비어 있어요</b></p><p>등록한 화장품 ${state.products.length}개가 모두 미개봉이에요.<br>쓰기 시작한 제품을 화장품 탭에서 「미개봉」을 눌러 개봉으로 바꾸면 루틴에 들어가요.</p>
+      <button class="primary" data-act="tab" data-tab="products">화장품 보러 가기</button></div>`
+      : `<div class="empty"><p><b>아직 루틴이 비어 있어요</b></p><p>개봉한 화장품을 등록하면<br>월~일 아침·저녁 루틴이 자동으로 짜여요.</p>
       <button class="primary" data-act="tab" data-tab="products">화장품 등록하러 가기</button></div>`;
 
   const mark = i => { const g = R.days[i].pm.map(id => byId.get(id)).filter(Boolean).map(group);
@@ -951,7 +991,7 @@ function productForm(p, fresh) {              // fresh = 사진에서 읽어 미
     <div class="if-opened ago" role="group" aria-label="개봉일 빠르게 고르기"><small>언제쯤 뜯었어요?</small>${AGO.map(([n, d, m]) =>
       `<button type="button" class="chip" data-act="ago" data-d="${d}" data-m="${m}">${n}</button>`).join('')}</div>
     <label>메모 <textarea name="memo" rows="2" maxlength="300">${esc(p.memo)}</textarea></label>
-    <details class="more" ${p.rest || p.pair || p.harsh ? 'open' : ''}><summary>자세한 설정 · 쉬는 저녁, 먼저 바를 제품, 예민한 주</summary><div>
+    <details class="more" ${p.rest || p.pair || p.harsh ? 'open' : ''}><summary>자세한 설정 · ${!isNew && state.places.length > 1 ? '쉬는 저녁, 예민한 주, 장소 등' : '쉬는 저녁, 먼저 바를 제품, 예민한 주'}</summary><div>
     <div class="field">${help('쉬는 저녁', '고른 저녁엔 이 제품을 빼고 같은 종류 다른 제품을 넣어요. 예: 각질 마스크 날엔 꾸덕한 밤 빼기')}<select name="rest" aria-label="쉬는 저녁"><option value="">없음</option>${Object.entries(REST).map(([v, [n]]) =>
       `<option value="${v}" ${v === p.rest ? 'selected' : ''}>${n}</option>`).join('')}</select><small class="restnote" role="status">${esc(restNote(state, p, today()))}</small></div>
     <div class="field">${help('먼저 바를 제품', '이 제품 바로 앞에 붙여 발라요. 예: 레티놀 아이크림 앞에 일반 아이크림')}<select name="pair" aria-label="먼저 바를 제품"><option value="">없음</option>${state.products.filter(q => q.id !== p.id)
@@ -959,6 +999,8 @@ function productForm(p, fresh) {              // fresh = 사진에서 읽어 미
       .map(q => `<option value="${esc(q.id)}" ${q.id === p.pair ? 'selected' : ''}>${esc(q.name)} (${CATS[q.cat][0]})</option>`).join('')}</select></div>
     <div class="field">${help('예민한 주', '켜 두면 피부 기록이 예민·홍조인 주엔 이 제품을 자동 루틴에서 빼요. 고함량 성분처럼 자극이 될 수 있는 제품에 켜 두세요. 레티놀·각질 성분 제품은 켜지 않아도 그 주엔 쉬어요.')}
       <label class="pill"><input type="checkbox" name="harsh" ${p.harsh ? 'checked' : ''}> 예민한 주엔 쉼</label></div>
+    ${!isNew && state.places.length > 1 ? `<div class="field">${help('장소', '다른 장소를 고르고 저장하면 이 제품을 그 장소의 목록으로 옮겨요. 이 장소의 루틴에서는 빠지고, 개봉일·기한·설정은 그대로 가져가요.')}<select name="place" aria-label="장소" autocomplete="off">${state.places.map(x =>
+      `<option value="${esc(x.id)}" ${x.id === state.place ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>` : ''}
     </div></details>
     ${!isNew && p.opened ? `<button type="button" data-act="finish" data-id="${esc(p.id)}">✓ 다 썼어요 · 대신 쓸 것 찾기</button>` : ''}
     <div class="actions">${isNew ? (more ? '<button type="button" data-act="skip">건너뛰기</button>' : '') : filling ? '<button type="button" data-act="fillSkip">건너뛰기</button>'
@@ -1079,7 +1121,7 @@ function placeForm(id) {                      // id 가 있으면 그 장소 이
 }
 
 async function backupForm() {
-  const key = await getKey();      // null = 저장소를 못 읽음 ('' = 키 없음)
+  const key = await Promise.race([getKey(), new Promise(r => setTimeout(r, 2500, null))]);      // null = 저장소를 못 읽음 ('' = 키 없음). 저장소가 멈춰 있어도 창은 연다 — 백업 내보내기가 여기 있다
   const kept = await (navigator.storage?.persisted?.() ?? Promise.resolve(null)).catch(() => null);      // 시작할 때 persist() 로 요청해 둔 보호가 됐나
   const many = state.places.length > 1;
   modal(`<form method="dialog">
@@ -1092,7 +1134,7 @@ async function backupForm() {
     ${help('Google AI Studio에서 무료 API 키를 만들어 넣어요', 'aistudio.google.com 에서 만들 수 있어요. 키를 넣으면 피부 사진은 상태 칸과 메모를, 화장품 사진은 이름·종류·기한을 Gemini가 채워 주고, AI 루틴 점검도 쓸 수 있어요. 결제 정보를 연결하지 않은 프로젝트의 키면 요금이 나가지 않아요.')}
     <div class="note"><details><summary>무료 등급은 보낸 사진과 받은 답을 구글이 제품 개선에 쓰고, 사람이 볼 수도 있어요</summary><span>구글은 무료 등급에 민감한 개인정보를 보내지 말라고 안내해요. 얼굴 전체보다 피부 부분만 가까이 찍기를 권해요.</span></details></div>
     ${help('키는 이 브라우저에만 저장되고 백업 파일엔 안 들어가요', `Google Cloud 콘솔의 키 설정에서 웹사이트 제한을 ${esc(location.origin)}/* 로, API 제한을 Generative Language API로 걸어 두면 다른 웹사이트에서는 이 키를 못 써요. 다만 브라우저 밖에서 쓰는 것까지는 막지 못해요.`)}
-    ${key === null ? '<p class="note">저장소를 읽지 못했어요. 새로고침해 주세요.</p>'
+    ${key === null ? '<p class="note">저장소를 읽지 못했어요. 잠시 뒤 이 창을 다시 열어 주세요.</p>'
       : key ? `<p>등록된 키 …${esc(key.slice(-4))}</p><button type="button" class="danger" data-act="delKey">키 지우기</button>`
       : `<label>Gemini API 키 <input name="apiKey" class="secret" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="AIza…"></label><button name="saveKey">키 저장</button>`}
     <h2>백업·복원</h2>
@@ -1132,7 +1174,8 @@ function shrink(file, max, q) {               // 긴 변 max px JPEG data URL �
 async function exportAll() {
   if (noSave) return toast('저장된 내용을 읽지 못한 상태라 백업을 만들 수 없어요. 새로고침해 주세요.', true);      // 빈 상태를 백업으로 내보내지 않게
   const photos = Object.create(null);
-  for (const l of state.logs) if (l.thumb) photos[l.id] = await idb.get('photo:' + l.id);
+  let miss = 0;                                // 못 읽은 원본 사진 수 — 저장소가 멈춰 있으면 사진 없이라도 내보낸다(저장 안 된 내용을 건지는 길). 하나 못 읽으면 나머지는 기다리지 않는다
+  for (const l of state.logs) if (l.thumb) { try { if (miss) throw 0; photos[l.id] = await idb.get('photo:' + l.id); } catch { miss++; } }
   // ponytail: 사진까지 JSON 한 파일로 내보낸다. 사진이 수백 장이라 파일이 무거워지면 zip·분할로
   const at = today(), name = `화장대-백업-${at}.json`;
   const blob = new Blob([JSON.stringify({ app: 'vanity', v: 1, at, state: { ...state, backupAt: at }, photos })], { type: 'application/json' });
@@ -1149,9 +1192,10 @@ async function exportAll() {
     setTimeout(() => URL.revokeObjectURL(url), 6e4);
   }
   if (blob.size > BACKUP_MAX) return toast('백업이 300MB를 넘어 이 앱으로는 다시 가져올 수 없어요. 오래된 피부 기록을 지우고 다시 내보내 주세요.', true);
-  state.backupAt = at; save(); render();
+  if (!miss) { state.backupAt = at; save(); }      // 사진이 빠진 백업은 「마지막 백업」으로 치지 않는다
+  render();
   if (dlg.open && dlg.querySelector('[data-pick=backup]')) backupForm();      // 열려 있는 ⋯ 창의 「마지막 백업」도 새로
-  toast(shared ? '백업 파일을 보냈어요. 폰 밖(구글 드라이브 등)에도 두면 더 안전해요' : '백업 파일을 「다운로드」 폴더에 저장했어요. 폰 밖(구글 드라이브 등)에도 두면 더 안전해요');
+  toast(miss ? `백업 파일을 만들었어요 · 피부 사진 원본 ${miss}장은 읽지 못해 빠졌어요` : shared ? '백업 파일을 보냈어요. 폰 밖(구글 드라이브 등)에도 두면 더 안전해요' : '백업 파일을 「다운로드」 폴더에 저장했어요. 폰 밖(구글 드라이브 등)에도 두면 더 안전해요', !!miss);
 }
 async function importFile(file) {
   if (file.size > BACKUP_MAX) return toast('백업 파일이 너무 커요 (300MB까지)', true);
@@ -1166,6 +1210,9 @@ async function importFile(file) {
   // 새 사진 → 새 state → 옛 사진 삭제 순서. 중간에 실패해도 지금 기록은 남는다(id 가 같은 기록의 사진은 백업본으로 바뀌어 있을 수 있음)
   const old = state.logs;
   const swap = async () => {
+    // 읽기를 먼저 다 한다 — 읽다가 그만두게 돼도(저장소가 응답하지 않음) 연결 칸만 지워진 채 반쯤 바뀌어 남지 않게
+    const recs = [];
+    for (const p of next.places) { const rec = asSync(await idb.get(syncKey(p.id))); if (rec) recs.push([p.id, rec]); }
     for (const l of next.logs) {
       const ph = data.photos?.[l.id];
       if (l.thumb && isPhoto(ph)) await idb.set('photo:' + l.id, ph);
@@ -1174,15 +1221,13 @@ async function importFile(file) {
     // 같이 쓰는 중인지는 저장소의 sync 칸으로 본다(잠금 안에서) — 다른 창에서 연결했으면 비우고, 다른 창에서 끊었으면 되살리지 않는다
     let mine = null;
     for (const p of state.places) if (!next.places.some(q => q.id === p.id)) await idb.del(syncKey(p.id));      // 백업에 없는 장소는 사라진다 — 그 연결도 지운다(남겨 두면 나중에 같은 장소가 든 백업을 가져올 때 묻지 않고 다시 붙는다)
-    for (const p of next.places) {
-      const rec = asSync(await idb.get(syncKey(p.id)));
-      if (!rec) continue;
+    for (const [id, rec] of recs) {
       rec.base = noBase();
-      await idb.set(syncKey(p.id), rec);
-      if (p.id === next.place) mine = rec;
+      await idb.set(syncKey(id), rec);
+      if (id === next.place) mine = rec;
     }
     await idb.set(STATE_KEY, next);
-    noSave = false;                           // 가져온 내용이 저장됐으니 이제부터 고친 것도 저장한다
+    noSave = behind = false;                  // 가져온 내용이 저장됐으니 이제부터 고친 것도 저장한다
     state = next; sync = mine;                // 백업에서 고르고 있던 장소로 바뀐다 — 같이 쓰기 연결도 그 장소 것으로
   };
   // 맞추기와 같은 잠금 안에서 바꾼다 — base 를 비운 뒤 새 목록으로 바뀌기 전에 맞추기가 끼어들면, 옛 목록으로 base 가 다시 채워져 백업에 없는 화장품이 서버에서 지워진다
@@ -1218,7 +1263,7 @@ const locked = fn => (navigator.locks ? navigator.locks.request('vanity-sync', (
 // base 는 읽을 때마다 지금 판의 정리 함수로 다시 정리한다 — 앱이 새 판이 되어 화장품 칸이 늘면 옛 글과 달라져서, 전부 「서버가 바뀐 것」으로 보고 이 기기에서 고친 것을 버리게 된다
 const rebase = (m, clean) => new Map(m instanceof Map ? [...m].flatMap(([id, s]) => { try { return [[id, JSON.stringify(clean({ ...JSON.parse(s), id }))]]; } catch { return []; } }) : []);
 const asSync = v => { const m = SYNC_IN.exec(v?.url ?? ''); return m?.[2] ? { url: `${m[1]}/rooms/${m[2]}`, at: +v.at || 0, base: Object.fromEntries(SYNCED.map(([k, clean]) => [k, rebase(v.base?.[k], clean)])) } : null; };
-const syncWhy = e => (e === 401 || e === 403 ? '이 주소를 읽고 쓸 권한이 없어요 (Firebase 규칙을 확인해 주세요)' : e === 404 ? '없는 주소예요' : e === 'save' ? '이 기기에 저장하지 못했어요 (저장 공간을 확인해 주세요)'
+const syncWhy = e => (e === 'read' || e?.name === 'TimeoutError' ? '이 기기의 기록을 읽지 못했어요 (잠시 뒤 다시 맞춰요)' : e === 401 || e === 403 ? '이 주소를 읽고 쓸 권한이 없어요 (Firebase 규칙을 확인해 주세요)' : e === 404 ? '없는 주소예요' : e === 'save' ? '이 기기에 저장하지 못했어요 (저장 공간을 확인해 주세요)'
   : e === 'new' ? '같이 쓰는 목록이 새 형식이에요 (앱을 새로고침해 주세요)' : '인터넷 연결을 확인해 주세요');
 const syncSaid = () => (syncErr ? `맞추지 못했어요 — ${syncErr}` : sync.at ? `${new Date(sync.at).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' })}에 맞췄어요` : '아직 맞추지 않았어요');
 const syncDirty = () => !!sync && SYNCED.some(([k]) => diffList(state[k], sync.base[k]).size);      // 서버에 올릴 것이 있나 (이 기기에서 화장품·다 쓴 기록을 고쳤나)
@@ -1237,7 +1282,8 @@ async function syncOnce() {
   if (state.place !== pid) return;            // 읽는 사이 장소를 바꿨다 — 앞 장소의 연결을 새 장소 것으로 삼지 않는다 (syncNow 가 새 장소로 다시 돈다)
   if (!(sync = cur)) return;
   const room = await roomCall(cur.url);
-  await reload();                             // 다른 창이 그 사이 저장했으면 그 내용으로 — 옛 목록을 견주거나 올리거나 덮어쓰지 않게 (서버 답을 받은 뒤에 읽어야 기다리는 사이 저장된 것까지 본다)
+  if (document.hidden) throw 'away';          // 답을 기다리는 사이 화면이 숨었다 — 숨은 채 저장소를 쓰지 않는다(얼면 다른 탭의 저장을 막는다). 다시 보일 때 맞춘다
+  if (!await reload()) throw 'read';          // 다른 창이 그 사이 저장했으면 그 내용으로 — 옛 목록을 견주거나 올리거나 덮어쓰지 않게 (서버 답을 받은 뒤에 읽어야 기다리는 사이 저장된 것까지 본다)
   // 받는 사이 끊었거나·다른 방으로 바꿨거나·장소를 바꿨으면(이 창이든 다른 창이든) 이번 것은 버린다 — 한 장소의 방을 다른 장소 목록과 섞으면 양쪽 목록이 다 망가진다
   if (sync !== cur || state.place !== pid) return;
   if (room?.v && room.v !== 1) throw 'new';   // 모르는 형식의 방은 건드리지 않는다 (목록이 없는 것으로 읽어 이 기기 것을 지우지 않게)
@@ -1258,7 +1304,7 @@ function syncNow() {
   if (!state) return Promise.resolve(false);      // 아직 저장된 내용을 읽기 전 (자체 점검 화면도)
   if (noSave) return syncErr = '저장된 내용을 읽지 못한 상태예요 (새로고침해 주세요)', Promise.resolve(false);
   const gen = placeGen;                       // 도는 사이 장소가 바뀌었으면 한 번 더 (앞 장소 것이 실패했어도 · 갔다가 바로 돌아왔어도 — 그때 비운 sync 를 다시 읽어야 한다)
-  return syncBusy ??= locked(syncOnce).then(() => (syncErr = '', true), e => (syncErr = syncWhy(e), false))
+  return syncBusy ??= locked(syncOnce).then(() => (syncErr = '', true), e => (e === 'away' || (syncErr = syncWhy(e)), false))      // 숨어서 그만둔 것은 실패로 적지 않는다
     .then(ok => { syncBusy = null; if (placeGen !== gen || (ok && syncDirty())) syncNow(); return ok; });
 }
 
@@ -1805,10 +1851,15 @@ dlg.addEventListener('submit', async e => {
     if (p.when !== (prev?.when ?? '')) dropClash(p);
     if (state.routine.manual && p.rest !== (prev?.rest ?? '')) dropRest(state.routine.days, state.products, p);
     if (rebuyFor && !f.dataset.id) { const x = state.done.find(x => x.id === rebuyFor); if (x) x.again = false; rebuyFor = null; }      // 다시 산 것을 등록했으면 재구매 목록에서 내린다
+    // 장소 칸을 바꿨으면 고친 내용 그대로 그 장소로 옮긴다 (같이 쓰는 장소면 이 장소 목록에선 지운 것으로 올라가고, 받는 장소는 다음에 맞출 때 올라간다)
+    const to = f.dataset.id ? d.get('place') : '', moved = to && to !== state.place ? moveProduct(state, p.id, to) : state;
+    const went = moved !== state ? `‘${p.name}’을(를) ‘${moved.places.find(x => x.id === to).name}’(으)로 옮겼어요` : '';
+    if (went) { state = moved; toast(went); }
+    else if (to && to !== state.place) toast('고른 장소를 찾지 못해 옮기지 않았어요', true);      // 창을 연 사이 다른 창에서 그 장소를 지웠다
     if (!f.dataset.id && queue.length) { productForm(queue.shift(), true); toast(`‘${p.name}’ 저장했어요`); return void commit(); }      // 사진에서 읽은 다음 제품
     if (fill && f.dataset.id && f.dataset.id === fill.ids[fill.i]) {      // 기한 채우기 중이면 저장하고 다음 제품으로
       if (knownExpiry(p)) fill.done++;
-      commit(); toast(`‘${p.name}’ 저장했어요${knownExpiry(p) ? ` · ${knownExpiry(p)}까지` : ''}`); return fillGo(1);
+      commit(); toast(went || `‘${p.name}’ 저장했어요${knownExpiry(p) ? ` · ${knownExpiry(p)}까지` : ''}`); return fillGo(1);      // 옮겼으면 그 말이 다음 알림에 덮이지 않게
     }
   } else if (f.dataset.form === 'log') {
     if (f.inert) return;                      // 사진을 저장하는 사이 한 번 더 눌러도 기록이 둘 생기지 않게
@@ -1842,24 +1893,31 @@ function refresh() {
   shownDay = today(); dayIdx = todayIdx(); commit();
 }
 // 다른 창이 저장했거나 이 창이 다시 보이면 저장소의 최신 내용으로 바꾼다 (못 읽었던 상태면 건드리지 않음)
+// 읽었으면 true(바뀐 것이 없어도), 못 읽었으면 false — 못 읽은 동안은 저장·맞추기가 옛 내용으로 나가지 않게 behind 를 세운다 (save·syncOnce)
 async function reload() {
-  if (noSave || !state) return;
+  if (noSave || !state) return true;
   try {
     const saved = await idb.get(STATE_KEY), s = JSON.stringify(saved);
+    behind = false;
     // 바뀐 게 없으면 다시 그리지 않는다 — 폰은 사진 찍기·고르기에서 돌아오면 이게 사진보다 먼저 돌아서, 다시 그리면 사진이 사라진 입력 칸으로 간다
-    if (saved == null || s === seen) return;
+    if (saved == null || s === seen) return true;
     const was = state.place;
     seen = s; state = cleanState(saved);
     if (state.place !== was) leftPlace();     // 다른 창에서 장소를 바꿨다 — 앞 장소 것을 고치던 창과 같이 쓰기 연결을 내려놓는다 (그 창에서 저장하면 엉뚱한 장소에 들어간다)
     arrange(); render();
-  } catch {}
+    return true;
+  } catch { behind = true; return false; }     // 저장소가 응답하지 않거나(다른 탭이 붙잡고 있음) 읽기 오류
 }
-bc?.addEventListener('message', () => reload());
+bc?.addEventListener('message', () => { if (document.hidden) behind = true; else reload(); });      // 숨은 탭은 읽지 않고 표시만 해 둔다 — 다시 보일 때 읽는다 (숨은 채 저장소를 쓰다 얼면 다른 탭의 저장을 막는다)
 // 같이 쓰는 목록은 앱을 열 때·다시 볼 때·인터넷이 돌아올 때·고칠 때 맞춘다
 // ponytail: 켜 둔 동안은 1분마다 받아 온다. 상대가 고친 것이 바로 보여야 하면 Firebase 의 실시간 받기(EventSource)로
-document.addEventListener('visibilitychange', () => { if (!document.hidden) reload().then(refresh).then(syncNow); });
-addEventListener('pageshow', () => reload().then(refresh).then(syncNow));
-addEventListener('online', () => syncNow());
+// 다시 읽지 못했으면 날짜 바뀜 처리(저장)는 건너뛴다 — 고친 것도 없는데 「저장하지 못했어요」가 뜨지 않게. 맞추기는 스스로 다시 읽고 판단한다
+const wake = () => reload().then(ok => { if (ok) refresh(); }).then(syncNow);
+document.addEventListener('visibilitychange', () => { if (document.hidden) idb.rest(); else wake(); });
+addEventListener('pageshow', wake);
+addEventListener('pagehide', () => idb.rest());
+document.addEventListener('freeze', () => idb.rest());      // 폰이 탭을 얼리기 직전
+addEventListener('online', () => document.hidden || syncNow());
 setInterval(() => document.hidden || syncNow(), 60e3);
 dlg.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.name === 'syncUrl') { e.preventDefault(); ACT.joinSync(); } });      // 주소 칸에서 Enter = 연결 (그냥 두면 창의 첫 버튼이 눌린다)
 
@@ -2220,6 +2278,14 @@ function selfTest() {
   const gone = dropPlace(back, 'home');
   eq([gone.places.map(p => p.name), gone.place === born, pids(gone), Object.keys(gone.away), dropPlace(gone, born) === gone, pids(dropPlace(back, born)), dropPlace(back, born).places.length, dropPlace(back, 'nope') === back],
     [['본가'], true, 'b', [], true, 'a', 1, true], '장소 지우기: 보고 있던 곳을 지우면 남은 곳으로 · 마지막 하나는 못 지운다');
+  // 제품을 다른 장소로 옮기기: 이 장소의 루틴·체크·먼저 바를 제품에서 빠지고, 받는 쪽엔 새 id 로 개봉·기한·설정 그대로 들어간다
+  const mvS = cleanState({ ...back, products: [P({ id: 'a', name: '토너', cat: 'toner', openedAt: '2026-11-01', expiry: '2027-05-01', when: 'pm', harsh: true, memo: '메모' }), P({ id: 'c', name: '크림', cat: 'cream', pair: 'a' })],
+    routine: { manual: true, days: [{ am: ['a', 'c'], pm: ['a'] }] }, ticks: { '2026-11-16': { am: ['a', 'c'] } } });
+  const mvd = moveProduct(mvS, 'a', born), mvGot = mvd.away[born].products.at(-1), { id: gotId, ...gotRest } = mvGot, { id: _a, ...srcRest } = mvS.products[0];
+  eq([pids(mvd), mvd.products[0].pair, mvd.routine.days[0], mvd.ticks, mvd.away[born].products.map(q => q.name), gotId !== 'a' && SYNC_ID.test(gotId), gotRest, pids(goPlace(mvd, born)) === 'b,' + gotId,
+    moveProduct(mvS, 'a', 'home') === mvS, moveProduct(mvS, 'a', 'nope') === mvS, moveProduct(mvS, 'ghost', born) === mvS, mvd.done.length, mvd.skin.type],
+    ['c', '', { am: ['c'], pm: [] }, { '2026-11-16': { am: ['c'], pm: [] } }, ['본가 크림', '토너'], true, srcRest, true, true, true, true, 1, 'oily'],
+    '제품을 다른 장소로 옮기기: 이 장소의 루틴·체크·먼저 바를 제품에서 빠지고 받는 쪽에 새 id 로 개봉일·기한·설정 그대로 · 지금 장소·없는 장소·없는 제품이면 그대로');
   const odd = cleanState({ products: [P({ id: 'a' })], places: [{ id: 'p1' }, { id: 'p1', name: '겹침' }, { name: 'id 없음' }, { id: 'p2', name: '둘째' }, ...Array.from({ length: 9 }, (_, i) => ({ id: 'x' + i, name: 'n' }))],
     place: 'lost', away: { p1: { products: [P({ id: 'z' })] }, p2: { products: [P({ id: 'q', pair: 'a' }), { id: 'bad' }] }, ghost: { products: [P({ id: 'g' })] } } });
   const noAt = cleanState({ products: [P({ id: 'a' })], places: [{ id: 'p1', name: '첫째' }, { id: 'p2', name: '둘째' }], away: { p2: { products: [P({ id: 'q' })] } } });
