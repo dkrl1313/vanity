@@ -74,7 +74,8 @@ nav button[aria-current] { color: var(--accent); font-weight: 700; }
 .filters .chip[aria-pressed=true], .skinrow .chip[aria-pressed=true] { background: var(--ink); border-color: var(--ink); color: var(--bg); font-weight: 700; }
 .skinrow { display: flex; align-items: center; gap: 5px; margin-bottom: 12px; overflow-x: auto; scrollbar-width: none; }      /* 루틴 화면의 「오늘 피부」 한 줄 — 좁으면 옆으로 민다 */
 .skinrow > * { flex: none; }
-.skinrow .chip { padding: 4px 7px; }           /* 여섯 개가 좁은 폰(360px) 한 줄에 들어가게 */
+.skinrow .chip { padding: 4px 6px; }           /* 여섯 개가 좁은 폰(360px) 한 줄에 들어가게 */
+.skinrow .lbl { border: 0; background: none; padding: 4px 0; min-height: 34px; border-radius: 6px; font-size: 13px; color: var(--muted); }      /* 「오늘 피부 ✏️」 — 눌러서 오늘 기록 창(메모) */
 .kinds { margin: 0 0 10px; line-height: 1.7; }
 .kinds span { white-space: nowrap; }
 .kinds b { color: var(--ink); }
@@ -950,8 +951,10 @@ function viewRoutine() {
   };
 
   // 오늘 피부 상태를 한 번 눌러 기록 (오늘 화면에서만) — 예민·홍조면 그 주 루틴이 바로 바뀐다. 피부 기록 탭에 오늘 기록으로 남는다
-  const mine = state.logs[lastAt(state.logs, now)]?.tags ?? [];
-  const skinRow = dayIdx === todayIdx() && !editing ? `<div class="skinrow" role="group" aria-label="오늘 피부 상태"><small>오늘 피부</small>${TAGS.map((t, i) =>
+  // 줄 머리 「오늘 피부 ✏️」를 누르면 그 오늘 기록 창이 열려 메모를 바로 적는다(없으면 새 기록) — 하루 중 느낀 점을 덧붙이기 쉽게, 메모는 AI 점검에 같이 간다. 메모가 있으면 📝
+  // 버튼을 따로 달지 않고 글자를 버튼으로: 좁은 폰(360px)에선 칩 여섯 개로 줄이 이미 찬다
+  const todayLog = state.logs[lastAt(state.logs, now)], mine = todayLog?.tags ?? [];
+  const skinRow = dayIdx === todayIdx() && !editing ? `<div class="skinrow" role="group" aria-label="오늘 피부 상태"><button id="skMemo" class="lbl" data-act="skinMemo" aria-label="오늘 피부 기록 열어 메모 적기${todayLog?.memo ? ' (메모 있음)' : ''}">오늘 피부 ${todayLog?.memo ? '📝' : '✏️'}</button>${TAGS.map((t, i) =>
     `<button id="sk${i}" class="chip" data-act="skinTag" data-tag="${t}" aria-pressed="${mine.includes(t)}">${t}</button>`).join('')}</div>` : '';
   return `<div class="days" role="group" aria-label="요일">${days}</div>
     <div class="bar"><small>${!R.manual ? '자동 루틴 · 화장품이 바뀌면 알아서 다시 짜요' : R.until ? '직접 고친 루틴 · 이번 주만, 다음 주 월요일부터 자동' : '직접 고친 루틴 · 자동 갱신은 멈췄어요'}</small>
@@ -1878,6 +1881,11 @@ const ACT = {
       : `‘${p.name}’을(를) 다 쓴 제품에 남겼어요${again ? ' · 또 살래요' : ''}`);
   },
   addLog() { logForm(); },
+  async skinMemo() {                          // 루틴 화면 「오늘 피부 ✏️」: 오늘 기록(여럿이면 칩이 고치는 그 마지막 것)을 열어 메모 칸으로 — 없으면 새 기록 창
+    await logForm(state.logs[lastAt(state.logs, today())]);
+    const m = dlg.open && dlg.querySelector('[data-form=log] [name=memo]');
+    if (m) { m.focus(); m.setSelectionRange(m.value.length, m.value.length); }      // 적어 둔 글 뒤에 이어 쓰게
+  },
   skinTag(d) {                                // 루틴 화면의 「오늘 피부」 (직접 고친 루틴엔 반영되지 않지만 기록은 남는다)
     if (noSave) return toast('저장된 내용을 읽지 못한 상태예요. 새로고침해 주세요.', true);
     if (TAGS.includes(d.tag)) { state.logs = tagToday(state.logs, d.tag, today()); commit(); }
