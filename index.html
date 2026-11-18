@@ -393,6 +393,12 @@ function missing(s, now, wait = false) {
 }
 // 예민한 주라 쉬는 「예민한 주엔 쉼」 제품 (자동 루틴일 때만 — 직접 고친 루틴은 앱이 빼지 않는다)
 const harshOut = (s, now) => (!s.routine.manual && isCalm(s.logs, now) ? s.products.filter(p => p.harsh && p.opened && CATS[p.cat][1] && p.when !== 'off' && !expired(p, now)) : []);
+// 「루틴에 안 넣음」으로 둔 개봉 제품 중 기한이 곧 끝나는 것(임박한 순) — 앱이 다시 넣지는 않는다(사용자가 뺀 것이고 왜 뺐는지 모른다). 잠시 쉬려고 뺐다가 잊고 기한을 넘기지 않게 알리기만 (11-18)
+// 직접 고친 루틴에 손으로 넣어 둔 것은 쓰고 있는 것이라 뺀다. 기한이 지난 것은 「기한 지난 개봉 제품」 안내가 센다
+function offSoon(s, now) {
+  const inWeek = new Set(s.routine.days.flatMap(d => [...d.am, ...d.pm]));
+  return s.products.filter(p => p.opened && p.when === 'off' && CATS[p.cat][1] && !expired(p, now) && nearEnd(p, now) && !inWeek.has(p.id)).sort((a, b) => left(a, now) - left(b, now));
+}
 // 이번 주 루틴에 자리가 없는 제품이 몇 주 뒤에 다시 들어오는지 → Map(id → 주 수, max 주 안에 없으면 0). 다음 주부터 차례로 짜 보고 다 찾으면 멈춘다
 // 지금 제품·설정 그대로라고 보고 짠다 — 기한·계절은 그 주 기준, 예민한 주는 아닌 것으로 (그때의 피부 기록은 알 수 없다)
 const TURN_WEEKS = 8;
@@ -897,6 +903,11 @@ function viewRoutine() {
   if (gone) notes.push(note(`기한 지난 개봉 제품 ${gone}개${R.manual ? '' : ' — 루틴에서 뺐어요'}`,
     guessGone ? `그중 ${guessGone}개는 종류별 보통 사용기간으로 잡은 추정 기한이에요 — 아직 괜찮으면 제품에 실제 기한을 적어 주세요.` : '',
     '<button data-act="tab" data-tab="products" data-f="soon">보러 가기</button>'));      // 화장품 탭의 「임박·만료」로 — 거기서 눌러 다 썼어요·기한 고치기
+  // 루틴에 안 넣은 제품의 기한이 곧 끝나면 알린다 (offSoon). 하나면 바로 그 제품 창으로, 여럿이면 「임박·만료」로
+  const offs = offSoon(state, now), until = p => `${knownExpiry(p) ? '기한' : '추정 기한'}이 ${left(p, now) ? `${left(p, now)}일 남았어요` : '오늘까지예요'}`;
+  if (offs.length) notes.push(note(offs.length === 1 ? `루틴에 안 넣은 ‘${esc(offs[0].name)}’ ${until(offs[0])}` : `루틴에 안 넣은 제품 ${offs.length}개의 기한이 ${SOON}일 안으로 남았어요`,
+    `${offs.length > 1 ? offs.map(p => `· ${esc(p.name)} — ${until(p)}`).join('<br>') + '<br>' : ''}쓰는 때를 「루틴에 안 넣음」으로 둔 제품은 앱이 루틴에 다시 넣지 않아요. 다시 쓰려면 제품을 열어 쓰는 때를 바꿔 주세요.`,
+    offs.length === 1 ? `<button data-act="editProduct" data-id="${esc(offs[0].id)}">열어 보기</button>` : '<button data-act="tab" data-tab="products" data-f="soon">보러 가기</button>'));
   // 이번 주에 빠진 제품은 펼치면 언제 다시 들어오는지도 — 직접 넣을지 기다릴지 정하기 쉽게 (자동 루틴만: 직접 고친 루틴은 돌아가지 않는다)
   const back = ps => { const t = nextTurns(state, ps.map(p => p.id), now); return `다시 들어오는 때 (지금 제품·설정 그대로면)<br>${ps.map(p => `· ${esc(p.name)} — ${turnName(t.get(p.id))}`).join('<br>')}<br>`; };
   const restPs = missing(state, now, true), rest = restPs.map(p => esc(p.name)).join(', ');      // 자동 루틴일 때만 나온다
@@ -2283,6 +2294,11 @@ function selfTest() {
   const mqS = logs => ({ products: mq, logs, routine: { manual: false, days: generate(mq, isCalm(logs, '2026-11-16'), '2026-11-16') } }), mqIds = (s, w) => missing(s, '2026-11-16', w).map(p => p.id);
   eq([mqIds(mqS(red), true), mqIds(mqS(red), false).length, mqIds(mqS([]), true).sort(), mqIds(mqS([]), false)], [[], 1, ['ma', 'mb', 'mc'], []],
     '예민한 주엔 쉼 + 기한 임박: 쉬는 임박 제품을 기다린다고 안내하지 않고 자리 없는 제품으로 (예민한 주가 아니면 임박한 것만 쓰고 나머지가 기다린다)');
+  const osP = [P({ id: 'far', cat: 'cream', when: 'off', expiry: '2027-06-01' }), P({ id: 'd20', cat: 'cream', when: 'off', expiry: '2026-12-06' }), P({ id: 'd0', cat: 'sun', when: 'off', expiry: '2026-11-16' }),
+    P({ id: 'gone', cat: 'cream', when: 'off', expiry: '2026-11-15' }), P({ id: 'seal', cat: 'cream', when: 'off', expiry: '2026-11-20', opened: false }), P({ id: 'mk', cat: 'makeup', when: 'off', expiry: '2026-11-20' }),
+    P({ id: 'auto', cat: 'cream', expiry: '2026-11-20' }), P({ id: 'hand', cat: 'serum', when: 'off', expiry: '2026-11-20' }), P({ id: 'gs', cat: 'serum', when: 'off', openedAt: '2025-11-30' })];
+  eq(offSoon({ products: osP, routine: { manual: true, days: DAYS.map((_, i) => ({ am: i ? [] : ['hand'], pm: [] })) } }, '2026-11-16').map(p => [p.id, left(p, '2026-11-16')]), [['d0', 0], ['gs', 14], ['d20', 20]],
+    '루틴에 안 넣은 제품의 기한 임박 알림: 개봉·루틴 종류·30일 안·아직 안 지난 것만, 임박한 순 (추정 기한 포함 · 직접 고친 루틴에 넣어 둔 것·미개봉·자동 제품은 제외)');
   const wh = generate([P({ id: 'gel', cat: 'cleanser', when: 'am' }), P({ id: 'foam', cat: 'cleanser', when: 'pm' }), P({ id: 'lo', cat: 'lotion' }), P({ id: 'cr', cat: 'cream', when: 'pm' }),
     P({ id: 'vc', cat: 'serum', actives: ['vitc'], when: 'pm' }), P({ id: 'ret', cat: 'serum', actives: ['retinol'], when: 'am' })], false, '2026-11-16');
   ok(wh.every(d => d.am[0] === 'gel' && d.pm[0] === 'foam' && d.am.includes('lo') && d.pm.includes('lo') && !d.am.includes('cr') && d.pm.includes('cr')), '쓰는 때: 아침만·저녁만 제품은 매일 그 시간에만, 자동은 둘 다');
