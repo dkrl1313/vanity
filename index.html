@@ -71,7 +71,10 @@ nav button[aria-current] { color: var(--accent); font-weight: 700; }
 .empty b { color: var(--ink); font-size: 17px; }
 .chip { min-height: 34px; padding: 4px 12px; border-radius: 999px; font-size: 13px; color: var(--muted); }
 .chip.on { background: var(--soft); border-color: transparent; color: var(--accent); font-weight: 700; }
-.filters .chip[aria-pressed=true] { background: var(--ink); border-color: var(--ink); color: var(--bg); font-weight: 700; }
+.filters .chip[aria-pressed=true], .skinrow .chip[aria-pressed=true] { background: var(--ink); border-color: var(--ink); color: var(--bg); font-weight: 700; }
+.skinrow { display: flex; align-items: center; gap: 5px; margin-bottom: 12px; overflow-x: auto; scrollbar-width: none; }      /* 루틴 화면의 「오늘 피부」 한 줄 — 좁으면 옆으로 민다 */
+.skinrow > * { flex: none; }
+.skinrow .chip { padding: 4px 7px; }           /* 여섯 개가 좁은 폰(360px) 한 줄에 들어가게 */
 .kinds { margin: 0 0 10px; line-height: 1.7; }
 .kinds span { white-space: nowrap; }
 .kinds b { color: var(--ink); }
@@ -541,6 +544,21 @@ function cleanLog(l) {
     memo: text(l.memo, 500), thumb: isPhoto(l.thumb) ? l.thumb : '',      // thumb 가 있으면 원본 사진은 저장소의 photo:<id>
   };
 }
+// 루틴 화면의 「오늘 피부」: 오늘 기록(여러 건이면 마지막 것 — 예민한 주 판정이 보는 그 기록)의 상태를 한 번 눌러 켜고 끈다. 오늘 기록이 없으면 만든다
+// 좋음은 다른 상태와 같이 두지 않는다. 다 꺼져서 남길 것이 없으면(사진·메모도 없음) 그 기록은 지운다
+const lastAt = (logs, now) => logs.reduce((r, l, i) => (l.date === now ? i : r), -1);      // 오늘 기록 중 마지막 것의 자리 (없으면 -1)
+function tagToday(logs, tag, now) {
+  const i = lastAt(logs, now), cur = i < 0 ? cleanLog({ date: now }) : logs[i], on = !cur.tags.includes(tag);
+  const tags = TAGS.filter(t => (t === tag ? on : cur.tags.includes(t) && !(on && (tag === '좋음' || t === '좋음'))));
+  const next = { ...cur, tags }, keep = tags.length || next.memo || next.thumb;
+  return i < 0 ? (keep ? [...logs, next] : logs) : keep ? logs.map((l, j) => (j === i ? next : l)) : logs.filter((_, j) => j !== i);
+}
+// 「가라앉았어요」: 오늘 기록에서 예민·홍조만 빼고(남는 상태가 없으면 좋음), 오늘 기록이 없으면 좋음으로 하나 만든다 → 가장 최근 기록이 예민·홍조가 아니게 되어 예민한 주가 풀린다
+function calmOver(logs, now) {
+  const i = lastAt(logs, now), cur = i < 0 ? cleanLog({ date: now }) : logs[i];
+  const rest = cur.tags.filter(t => !CALM_TAGS.includes(t)), next = { ...cur, tags: rest.length ? rest : ['좋음'] };
+  return i < 0 ? [...logs, next] : logs.map((l, j) => (j === i ? next : l));
+}
 function cleanAnalysis(r) {                   // AI 답도 믿지 않고 정해진 값만 남긴다. '좋음'은 다른 상태와 같이 두지 않는다
   const tags = r?.ok === true ? TAGS.filter(t => Array.isArray(r.tags) && r.tags.includes(t)) : [];
   return { ok: r?.ok === true, tags: tags.length > 1 ? tags.filter(t => t !== '좋음') : tags,
@@ -835,7 +853,7 @@ function viewRoutine() {
       prev = cur;
     }
   }
-  if (why.length) notes.push(note(why.join(' · ')));
+  if (why.length) notes.push(note(why.join(' · '), '', tag ? '<button id="calmDone" data-act="calmDone">가라앉았어요 · 평소 루틴으로</button>' : ''));
   const soft = harshOut(state, now).map(p => esc(p.name)).join(', ');
   if (soft) notes.push(note(`예민한 주라 쉬는 제품: ${soft}`, '「예민한 주엔 쉼」으로 둔 제품이에요. 가장 최근 피부 기록이 예민·홍조가 아니게 되거나 7일이 지나면 돌아와요.'));
   const gone = state.products.filter(p => p.opened && expired(p, now)).length;
@@ -885,11 +903,15 @@ function viewRoutine() {
     return `<section class="card"><div class="head"><h2>${t === 'am' ? '☀️' : '🌙'} ${SLOTS[t]}${canTick && real.length ? ` <small>${n === real.length ? '다 발랐어요' : `${n}/${real.length} 발랐어요`}</small>` : ''}</h2>${all}</div>${rows ? `<ol class="steps">${rows}</ol>` : '<p class="muted">비어 있어요</p>'}${add}</section>`;
   };
 
+  // 오늘 피부 상태를 한 번 눌러 기록 (오늘 화면에서만) — 예민·홍조면 그 주 루틴이 바로 바뀐다. 피부 기록 탭에 오늘 기록으로 남는다
+  const mine = state.logs[lastAt(state.logs, now)]?.tags ?? [];
+  const skinRow = dayIdx === todayIdx() && !editing ? `<div class="skinrow" role="group" aria-label="오늘 피부 상태"><small>오늘 피부</small>${TAGS.map((t, i) =>
+    `<button id="sk${i}" class="chip" data-act="skinTag" data-tag="${t}" aria-pressed="${mine.includes(t)}">${t}</button>`).join('')}</div>` : '';
   return `<div class="days" role="group" aria-label="요일">${days}</div>
     <div class="bar"><small>${!R.manual ? '자동 루틴 · 화장품이 바뀌면 알아서 다시 짜요' : R.until ? '직접 고친 루틴 · 이번 주만, 다음 주 월요일부터 자동' : '직접 고친 루틴 · 자동 갱신은 멈췄어요'}</small>
       ${R.manual ? `<button id="weekOnly" data-act="weekOnly" aria-pressed="${!!R.until}">이번 주만</button><button id="regen" data-act="regen">자동으로 다시 짜기</button>` : ''}
       <button id="edit" data-act="edit">${editing ? '고치기 끝' : '직접 고치기'}</button></div>
-    ${notes.join('')}${week}${slot('am')}${slot('pm')}
+    ${notes.join('')}${week}${skinRow}${slot('am')}${slot('pm')}
     <button id="check" class="wide" data-act="check">✨ AI 루틴 점검</button>
     <button id="copy" class="wide" data-act="copyRoutine">📋 이번 주 루틴 글로 복사</button>
     <button id="paste" class="wide" data-act="pasteAdvice">📥 다른 AI 답 붙여 넣기</button>`;
@@ -1442,7 +1464,7 @@ function routineText(s, now) {
   const line = p => `- ${no(p)} ${p.name} | ${CATS[p.cat][0]} | 성분: ${p.actives.map(a => ACTIVES[a]).join('·') || '없음'} | 쓰는 때: ${when(p)}${p.when !== 'off' && restOf(p) ? ` | ${restOf(p)}엔 쉼(사용자 설정)` : ''}${p.when !== 'off' && p.harsh ? ' | 예민한 주엔 쉼(사용자 설정)' : ''}`
     + `${expired(p, now) ? ' | 기한 지남' : nearEnd(p, now) ? ` | 기한 ${left(p, now)}일 남음` : ''}${(expired(p, now) || nearEnd(p, now)) && !knownExpiry(p) ? '(종류별 보통 사용기간으로 잡은 추정)' : ''}${p.memo ? ` | 메모: ${p.memo.replace(/\s+/g, ' ')}` : ''}${pairName(p) ? ` | 바로 앞에 함께 바름: ${pairName(p)}` : ''}`;
   const opened = s.products.filter(p => p.opened), sealed = s.products.filter(p => !p.opened);
-  const last = s.logs.filter(l => l.date <= now).sort((a, b) => b.date.localeCompare(a.date))[0];
+  const last = s.logs.filter(l => l.date <= now).reduce((m, l) => (!m || l.date >= m.date ? l : m), null);      // 예민한 주 판정(calmTag)과 같은 기록 — 같은 날 여럿이면 마지막 것
   return [`[개봉한 제품 = 루틴 대상 ${opened.length}개]`, ...opened.map(line),
     `[아직 안 뜯은 제품 ${sealed.length}개]`, ...sealed.map(p => `- ${no(p)} ${p.name} | ${CATS[p.cat][0]}`),
     `[이번 주 루틴 — ${s.routine.manual ? '사용자가 직접 고친 루틴' : '앱이 자동으로 짠 루틴'}]`,
@@ -1726,6 +1748,15 @@ const ACT = {
       : `‘${p.name}’을(를) 다 쓴 제품에 남겼어요${again ? ' · 또 살래요' : ''}`);
   },
   addLog() { logForm(); },
+  skinTag(d) {                                // 루틴 화면의 「오늘 피부」 (직접 고친 루틴엔 반영되지 않지만 기록은 남는다)
+    if (noSave) return toast('저장된 내용을 읽지 못한 상태예요. 새로고침해 주세요.', true);
+    if (TAGS.includes(d.tag)) { state.logs = tagToday(state.logs, d.tag, today()); commit(); }
+  },
+  calmDone() {
+    if (noSave) return toast('저장된 내용을 읽지 못한 상태예요. 새로고침해 주세요.', true);
+    state.logs = calmOver(state.logs, today()); focusId = 'sk0';      // 버튼이 안내와 함께 사라지니 초점은 「오늘 피부」 줄로
+    commit(); toast('가라앉은 것으로 기록했어요 · 평소 루틴으로 돌아왔어요');
+  },
   editLog(d) { logForm(state.logs.find(l => l.id === d.id)); },
   delLog(d) {
     if (!confirm('이 피부 기록을 삭제할까요?')) return;
@@ -2096,6 +2127,20 @@ function selfTest() {
     isCalm([{ date: '2026-11-14', tags: ['예민'] }, { date: '2026-11-15', tags: ['좋음'] }], '2026-11-16'), isCalm([], '2026-11-16'),
     isCalm([{ date: '2026-11-14', tags: ['예민'] }, { date: '2027-11-15', tags: ['좋음'] }], '2026-11-16'), isCalm([{ date: '2027-01-01', tags: ['예민'] }], '2026-11-16')],
     [true, false, false, false, true, false], '예민 판정은 최근 7일·가장 최근 기록·앞날짜 무시');
+  // 오늘 피부 한 번에 기록 · 가라앉았어요
+  const L = (date, tags, o = {}) => cleanLog({ id: date + tags.join(''), date, tags, ...o }), D = '2026-11-16', tg = ls => ls.map(l => `${l.date.slice(8)}:${l.tags.join('+') || '-'}`).join(' ');
+  const q1 = tagToday([L('2026-11-15', ['건조'])], '홍조', D), q2 = tagToday(q1, '트러블', D), q3 = tagToday(q2, '좋음', D), q4 = tagToday(q3, '예민', D), q5 = tagToday(tagToday(q4, '예민', D), '예민', D);
+  eq([tg(q1), tg(q2), tg(q3), tg(q4), tg(tagToday(q4, '예민', D)), tg(q5), calmTag(q2, D), calmTag(q3, D),
+    tg(tagToday([L(D, ['유분'], { memo: '메모' })], '유분', D)), tg(tagToday([L(D, ['유분']), L(D, ['건조'])], '건조', D)), tg(tagToday([L(D, ['유분']), L(D, ['건조'])], '홍조', D))],
+    ['15:건조 16:홍조', '15:건조 16:트러블+홍조', '15:건조 16:좋음', '15:건조 16:예민', '15:건조', '15:건조 16:예민', '홍조', '',
+      '16:-', '16:유분', '16:유분 16:건조+홍조'],
+    '오늘 피부: 눌러서 켜고 끄기 · 오늘 기록이 없으면 만들고 다 꺼지면 지움(메모·사진이 있으면 남김) · 좋음은 혼자만 · 오늘 기록이 여럿이면 마지막 것');
+  const JPG = 'data:image/jpeg;base64,AAAA', frozen = Object.freeze([Object.freeze(L(D, ['유분'], { thumb: JPG })), Object.freeze(L('2027-01-01', ['예민']))]);
+  eq([tg(tagToday(frozen, '유분', D)), tagToday(frozen, '유분', D)[0].thumb === JPG, tg(calmOver(Object.freeze([Object.freeze(L(D, ['예민'])), Object.freeze(L('2027-01-01', ['좋음']))]), D)), tg(frozen)],
+    ['16:- 01:예민', true, '16:좋음 01:좋음', '16:유분 01:예민'], '오늘 피부: 사진이 있는 기록은 상태가 다 꺼져도 남고 · 앞날짜로 잘못 적힌 기록은 건드리지 않으며 · 받은 목록을 바꾸지 않는다');
+  const c1 = calmOver([L('2026-11-14', ['예민'])], D), c2 = calmOver([L(D, ['유분', '트러블', '홍조'])], D), c3 = calmOver([L(D, ['예민', '홍조'], { memo: 'm' })], D);
+  eq([tg(c1), calmTag(c1, D), tg(c2), calmTag(c2, D), tg(c3), c3[0].memo, calmTag(c3, D)], ['14:예민 16:좋음', '', '16:유분+트러블', '', '16:좋음', 'm', ''],
+    '가라앉았어요: 오늘 기록에서 예민·홍조만 빼고(남는 것이 없으면 좋음) · 오늘 기록이 없으면 좋음으로 새로 → 예민한 주가 풀린다');
   const tagOn = (...tags) => calmTag([{ date: '2026-11-14', tags }], '2026-11-16');
   eq([tagOn('홍조'), tagOn('홍조', '예민', '트러블'), tagOn('유분', '트러블', '홍조'), tagOn('트러블'), tagOn('유분'), tagOn('건조'), tagOn('좋음'), isCalm([{ date: '2026-11-14', tags: ['홍조'] }], '2026-11-16'),
     isCalm([{ date: '2026-11-14', tags: ['홍조'] }, { date: '2026-11-15', tags: ['트러블'] }], '2026-11-16')],
