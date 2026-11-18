@@ -547,6 +547,30 @@ function cleanLog(l) {
     memo: text(l.memo, 500), thumb: isPhoto(l.thumb) ? l.thumb : '',      // thumb 가 있으면 원본 사진은 저장소의 photo:<id>
   };
 }
+// 사용 기록 (11-18 사용자 요청: 한 달쯤 쓴 뒤 안 쓰는 기능을 가려내려고): 어떤 동작을 몇 번·마지막으로 언제 했는지만 이 기기에 센다 — 화장품 이름·메모 같은 내용은 담지 않는다
+// 모양: { since: 세기 시작한 날, n: { 동작 이름: [횟수, 마지막 날] } }. 어디로도 보내지 않고, ⋯ 창에서 보고 백업 파일에 같이 담긴다(가져올 때는 읽지 않는다)
+const cleanUse = u => ({ since: date(u?.since) || today(), n: Object.fromEntries(Object.entries(u?.n && typeof u.n === 'object' && !Array.isArray(u.n) ? u.n : {})
+  .filter(([k, v]) => k.length <= 40 && Array.isArray(v) && Number.isInteger(v[0]) && v[0] > 0).map(([k, v]) => [k, [v[0], date(v[1])]])) });
+// 동작 이름: 버튼의 data-act (+ 어느 탭·걸러 보기인지, 새로 받는 점검인지). 제품 id·메모 같은 값은 넣지 않는다
+const useName = d => d.act + (d.act === 'tab' ? ':' + (d.f || d.tab) : d.act === 'filter' ? ':' + d.f : d.act === 'check' && d.fresh ? ':fresh' : '');
+// 표에 보여 줄 기능 이름 — 여기 없는 동작(창 닫기·탭 넘기기 등)도 세기는 하지만 표엔 안 나온다. 여러 동작이 한 기능이면 같은 이름으로 묶는다. 기능을 더하면 여기도 한 줄
+const USE_NAMES = {
+  check: 'AI 루틴 점검', 'check:fresh': 'AI 루틴 점검', applyMemo: 'AI 제안 바로 적용', applyWhen: 'AI 제안 바로 적용', applyRest: 'AI 제안 바로 적용', applyHarsh: 'AI 제안 바로 적용',
+  'form:advice': '다른 AI 답 붙여 넣기', copyRoutine: '루틴 글로 복사', edit: '루틴 직접 고치기', 'pick:add': '루틴 직접 고치기', tick: '발랐어요 체크', day: '다른 요일 루틴 보기',
+  skinTag: '오늘 피부 상태 누르기', skinMemo: '오늘 피부 메모', calmDone: '가라앉았어요', 'form:log': '피부 기록 저장', 'pick:photo': '피부 사진 넣기 (AI 읽기)',
+  'form:product:new': '화장품 등록', 'form:product:edit': '화장품 고치기', 'pick:product': '사진으로 화장품 칸 채우기', open: '미개봉 눌러서 개봉', swap: '다 썼어요',
+  again: '또 살래요', rebuy: '다시 샀어요 등록', 'filter:buy': '살 것 보기', copyBuy: '살 것 목록 복사', 'filter:done': '다 쓴 제품 보기',
+  'filter:out': '걸러 보기', 'filter:sealed': '걸러 보기', 'filter:soon': '걸러 보기', 'filter:none': '걸러 보기', 'tab:soon': '임박·만료 보러 가기',
+  search: '화장품 찾기', 'pick:sort': '정렬 바꾸기', 'pick:kind': '종류 골라 보기', fillNext: '기한 하나씩 채우기', fixNext: '개봉일 바로잡기',
+  'place:go': '장소 바꾸기', 'place:add': '장소 추가', 'pick:skin': '피부 타입 고르기', export: '백업 내보내기', 'pick:backup': '백업 가져오기',
+  joinSync: '화장품 같이 쓰기', syncNow: '화장품 같이 쓰기', copySync: '화장품 같이 쓰기',
+};
+// 표에 쓸 모양으로: 쓴 기능(많이 쓴 순 [이름, 횟수, 마지막 날])과 아직 안 쓴 기능 이름
+function useRows(u) {
+  const sum = new Map();
+  for (const [k, [n, last]] of Object.entries(u.n)) if (Object.hasOwn(USE_NAMES, k)) { const name = USE_NAMES[k], r = sum.get(name) ?? [0, '']; sum.set(name, [r[0] + n, last > r[1] ? last : r[1]]); }
+  return { rows: [...sum].map(([name, [n, last]]) => [name, n, last]).sort((a, b) => b[1] - a[1]), never: [...new Set(Object.values(USE_NAMES))].filter(name => !sum.has(name)) };
+}
 // 루틴 화면의 「오늘 피부」: 오늘 기록(여러 건이면 마지막 것 — 예민한 주 판정이 보는 그 기록)의 상태를 한 번 눌러 켜고 끈다. 오늘 기록이 없으면 만든다
 // 좋음은 다른 상태와 같이 두지 않는다. 다 꺼져서 남길 것이 없으면(사진·메모도 없음) 그 기록은 지운다
 const lastAt = (logs, now) => logs.reduce((r, l, i) => (l.date === now ? i : r), -1);      // 오늘 기록 중 마지막 것의 자리 (없으면 -1)
@@ -756,6 +780,15 @@ const esc = s => String(s).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 const VIEW_KEY = 'vanity.view';
 const viewPref = (() => { try { return JSON.parse(localStorage.getItem(VIEW_KEY)) || {}; } catch { return {}; } })();
 const keepView = () => { try { localStorage.setItem(VIEW_KEY, JSON.stringify({ sortBy, kindF })); } catch {} };
+// 사용 기록 세기 (cleanUse·USE_NAMES). localStorage 에 둔다 — 저장소(IndexedDB)가 막혀 있어도 세고, 탭이 여럿이어도 매번 읽고 하나 더해서 서로 덮어쓰지 않는다. 자체 점검 화면에선 세지 않는다
+const USE_KEY = 'vanity.use', USE_DAY = 'app:day';      // USE_DAY = 앱을 연 날을 세는 이름 — 버튼 동작 이름(open = 미개봉 개봉 등)과 겹치지 않게 ':' 를 넣었다
+const readUse = () => { try { return cleanUse(JSON.parse(localStorage.getItem(USE_KEY))); } catch { return cleanUse(); } };
+function used(name) {
+  if (location.search === '?test') return;
+  const u = readUse(); u.n[name] = [(u.n[name]?.[0] ?? 0) + 1, today()];
+  try { localStorage.setItem(USE_KEY, JSON.stringify(u)); } catch {}
+}
+const usedToday = () => { if (readUse().n[USE_DAY]?.[1] !== today()) used(USE_DAY); };      // 앱을 연 날 수 (하루에 한 번)
 let state, tab = 'routine', dayIdx = todayIdx(), shownDay = today(), editing = false, filter = 'all', kindF = Object.hasOwn(CATS, viewPref.kindF) ? viewPref.kindF : '',
   sortBy = typeof viewPref.sortBy === 'string' ? viewPref.sortBy : 'expiry', query = '', focusId = '', toastTimer, noSave = false;      // sortBy 는 SORTS 를 정한 뒤 한 번 더 거른다
 let placeOpts = '';                           // 맨 위 장소 고르기에 지금 들어 있는 목록 (render)
@@ -1228,6 +1261,13 @@ function placeForm(id) {                      // id 가 있으면 그 장소 이
       <button type="button" data-act="close">취소</button><button class="primary">저장</button></div></form>`);
 }
 
+// ⋯ 창의 「사용 기록」: 한 줄 요약만 보이고, 펼치면 많이 쓴 순 목록과 아직 안 쓴 기능 (useRows)
+function useHelp() {
+  const u = readUse(), { rows, never } = useRows(u), md = s => s.slice(5).replace('-', '/');
+  return help(`${md(u.since)}부터 · 앱을 연 날 ${u.n[USE_DAY]?.[0] ?? 0}일 · 쓴 기능 ${rows.length}가지 · 아직 안 쓴 ${never.length}가지`,
+    `${rows.map(([name, n, last]) => `${name} <b>${n}</b>번${last ? ` · 마지막 ${md(last)}` : ''}`).join('<br>') || '아직 기록이 없어요.'}${never.length ? `<br><br><b>아직 안 쓴 것</b><br>${never.join(' · ')}` : ''}`
+    + '<br><br>이 기기에서 쓴 횟수만 세요 — 화장품 이름·메모 같은 내용은 담지 않고 어디로도 보내지 않아요. 백업 파일에 같이 담기지만, 가져올 때 되살리지는 않아요.');
+}
 async function backupForm() {
   const key = await Promise.race([getKey(), new Promise(r => setTimeout(r, 2500, null))]);      // null = 저장소를 못 읽음 ('' = 키 없음). 저장소가 멈춰 있어도 창은 연다 — 백업 내보내기가 여기 있다
   const kept = await (navigator.storage?.persisted?.() ?? Promise.resolve(null)).catch(() => null);      // 시작할 때 persist() 로 요청해 둔 보호가 됐나
@@ -1262,6 +1302,8 @@ async function backupForm() {
     ${standalone() ? '' : `<h2>홈 화면에 앱으로 설치</h2>
     ${help('브라우저 메뉴에서 「홈 화면에 추가」나 「앱 설치」를 눌러요', '크롬은 오른쪽 위 ⋮, 삼성 인터넷은 아래쪽 ≡ 메뉴예요. 아이콘으로 바로 열 수 있고, 설치한 앱은 브라우저가 기록을 지키는 쪽으로 다뤄서 저장 보호가 켜지기 쉬워요. 같은 브라우저 안이라 기록은 그대로 이어져요.')}
     <div class="note"><details><summary>크롬과 삼성 인터넷처럼 브라우저가 다르면 기록이 따로예요</summary><span>브라우저를 바꿀 땐 백업 파일로 옮겨 주세요(AI 키는 백업에 안 들어가요).</span></details></div>`}
+    <h2>사용 기록</h2>
+    ${useHelp()}
     <div class="actions"><span class="grow"></span><button class="primary">닫기</button></div></form>`);
 }
 
@@ -1287,7 +1329,7 @@ async function exportAll() {
   for (const l of state.logs) if (l.thumb) { try { if (miss) throw 0; photos[l.id] = await idb.get('photo:' + l.id); } catch { miss++; } }
   // ponytail: 사진까지 JSON 한 파일로 내보낸다. 사진이 수백 장이라 파일이 무거워지면 zip·분할로
   const at = today(), name = `화장대-백업-${at}.json`;
-  const blob = new Blob([JSON.stringify({ app: 'vanity', v: 1, at, state: { ...state, backupAt: at }, photos })], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify({ app: 'vanity', v: 1, at, state: { ...state, backupAt: at }, photos, use: readUse() })], { type: 'application/json' });      // use = 사용 기록(동작 이름·횟수뿐). 가져올 때는 읽지 않는다
   // 파일 공유를 받아 주는 브라우저(아이폰 등)는 공유 창으로, 아니면 내려받기로 — 안드로이드 크롬은 json 파일 공유를 막아 두어 「다운로드」 폴더로 간다
   const file = new File([blob], name, { type: 'application/json' });
   let shared = false;
@@ -2012,19 +2054,20 @@ const ACT = {
     toast(`‘${p.name}’을(를) 지웠어요`);
   },
 };
-document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (state && b && Object.hasOwn(ACT, b.dataset.act)) ACT[b.dataset.act](b.dataset); });
+document.addEventListener('click', e => { const b = e.target.closest('[data-act]'); if (state && b && Object.hasOwn(ACT, b.dataset.act)) { used(useName(b.dataset)); ACT[b.dataset.act](b.dataset); } });
 $('#place').addEventListener('change', e => {      // 맨 위 장소 고르기 (추가·이름 바꾸기도 이 목록에서)
   const o = e.target.selectedOptions[0];
+  if (o) used('place:' + (o.dataset.do || 'go'));
   e.target.value = state.place;               // 「추가·이름 바꾸기」를 골랐으면 칸은 지금 장소로 되돌린다 (장소를 바꿨으면 render 가 새 장소로 맞춘다)
   if (o?.dataset.do) placeForm(o.dataset.do === 'edit' ? state.place : '');
   else if (o) toPlace(goPlace(state, o.value));
 });
-view.addEventListener('input', e => { if (e.target.id === 'q') { query = e.target.value; applySearch(); } });      // 화장품 찾기 (글자마다)
+view.addEventListener('input', e => { if (e.target.id === 'q') { if (!query && e.target.value) used('search'); query = e.target.value; applySearch(); } });      // 화장품 찾기 (글자마다 · 사용 기록은 찾기 시작할 때 한 번)
 view.addEventListener('change', e => {        // 루틴에 제품 추가 · 화장품 정렬
-  if (e.target.id === 'sort') { sortBy = e.target.value; keepView(); return render(); }
-  if (e.target.id === 'kind') { kindF = e.target.value; keepView(); return render(); }
+  if (e.target.id === 'sort') { used('pick:sort'); sortBy = e.target.value; keepView(); return render(); }
+  if (e.target.id === 'kind') { used('pick:kind'); kindF = e.target.value; keepView(); return render(); }
   const t = e.target.dataset.add;
-  if (t && product(e.target.value)) { state.routine.days[dayIdx][t].push(e.target.value); manual(); }
+  if (t && product(e.target.value)) { used('pick:add'); state.routine.days[dayIdx][t].push(e.target.value); manual(); }
 });
 
 dlg.addEventListener('input', e => {          // 화장품 폼: 이름으로 종류 추측, 개봉하면 개봉일 오늘
@@ -2045,11 +2088,13 @@ dlg.addEventListener('invalid', e => { if (e.target.name === 'openedAt') toast('
 dlg.addEventListener('change', async e => {   // 사진·백업 파일 고르기 · 피부 타입
   const t = e.target, file = t.files?.[0];
   if (t.name === 'skinType' || t.name === 'sensitive') {
+    used('pick:skin');
     const el = t.form.elements;
     state.skin = { type: el.skinType.value, sensitive: el.sensitive.checked }; commit();
     return toast('피부 타입을 저장했어요 · 루틴에 반영했어요');
   }
   if (!file) return;
+  if (t.dataset.pick) used('pick:' + t.dataset.pick);      // backup · product · photo
   if (t.dataset.pick === 'backup') importFile(file);
   if (t.dataset.pick === 'product') { fillFromPhoto(t.form, file); t.value = ''; }      // 못 읽었을 때 같은 사진을 다시 고를 수 있게
   if (t.dataset.pick === 'photo') {
@@ -2071,6 +2116,7 @@ dlg.addEventListener('close', e => { if (e.target === dlg && !dlg.open) checkBac
 dlg.addEventListener('submit', async e => {
   e.preventDefault();
   const f = e.target, d = new FormData(f);
+  if (f.dataset.form) used('form:' + f.dataset.form + (f.dataset.form === 'product' ? (f.dataset.id ? ':edit' : ':new') : ''));      // 사용 기록: 저장을 누른 횟수 (product:new·product:edit·log·place·advice)
   let added = null;                           // 이번에 새로 등록한 화장품 (맨 아래: 화면에 안 나오면 알림)
   if (f.dataset.form === 'product') {
     const p = readProduct(f);
@@ -2164,14 +2210,14 @@ async function twins() {
     document.getElementById('twin').hidden = !(open.size > 1 || old || syncHeld());      // 맞추기가 차례를 오래 못 받고 있어도 — 누군가 쥔 채 멈춰 있다
   } catch {}
 }
-const wake = () => (twins(), setTimeout(twins, 3000), reload().then(ok => { if (ok) refresh(); }).then(syncNow));      // 3초 뒤 한 번 더 — 새로고침 직후엔 앞 문서가 쥐던 것이 아직 안 풀려 잘못 세기도 한다
+const wake = () => (usedToday(), twins(), setTimeout(twins, 3000), reload().then(ok => { if (ok) refresh(); }).then(syncNow));      // 3초 뒤 한 번 더 — 새로고침 직후엔 앞 문서가 쥐던 것이 아직 안 풀려 잘못 세기도 한다
 document.addEventListener('visibilitychange', () => { if (document.hidden) { getting?.abort(); idb.rest(); } else wake(); });
 addEventListener('pageshow', wake);
 addEventListener('pagehide', () => idb.rest());
 document.addEventListener('freeze', () => idb.rest());      // 폰이 탭을 얼리기 직전
 addEventListener('online', () => document.hidden || syncNow());
 setInterval(() => document.hidden || (twins(), syncNow()), 60e3);
-dlg.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.name === 'syncUrl') { e.preventDefault(); ACT.joinSync(); } });      // 주소 칸에서 Enter = 연결 (그냥 두면 창의 첫 버튼이 눌린다)
+dlg.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.name === 'syncUrl') { e.preventDefault(); used('joinSync'); ACT.joinSync(); } });      // 주소 칸에서 Enter = 연결 (그냥 두면 창의 첫 버튼이 눌린다)
 
 /* ───────── 자체 점검: index.html?test ───────── */
 function selfTest() {
@@ -2465,6 +2511,15 @@ function selfTest() {
   eq([CI.properties.harsh, CI.required.every(k => Object.hasOwn(CI.properties, k)) && Object.keys(CI.properties).every(k => CI.required.includes(k)), CHECK_VALUES.includes('harsh:'), CHECK_PROMPT.includes('rest·harsh') && ADVICE_PROMPT.includes('rest·harsh'),
     cleanCheck({ points: [true, 'true', 1, undefined].map(harsh => ({ kind: '조정', title: 't', detail: 'd', harsh })) }).points.map(p => p.harsh)],
     [{ type: 'boolean' }, true, true, true, [true, false, false, false]], 'AI 점검 틀에 「예민한 주엔 쉼」 칸(harsh): 참일 때만 켜자는 제안 · 틀의 칸과 꼭 채울 칸이 같음');
+  // 사용 기록: 저장된 값 정리 · 동작 이름 · 표(같은 기능으로 묶어 많이 쓴 순, 아직 안 쓴 기능)
+  const useC = cleanUse({ since: '2026-11-18', n: { check: [3, '2026-11-20'], 'check:fresh': [2, '2026-11-25'], tick: [40, '2026-12-01'], close: [9, '2026-12-01'], bad: 'x', zero: [0, '2026-11-18'], neg: [-1, ''], odd: [1.5, ''], nodate: [2, '2026-02-30'], constructor: [1, '2026-11-18'] } });
+  const useR = useRows(useC);
+  eq([useC.since, Object.keys(useC.n).sort(), useC.n.nodate, cleanUse(null).n, cleanUse({ n: [] }).n, cleanUse({ since: 'x' }).since === today(),
+    [{ act: 'tab', tab: 'skin' }, { act: 'tab', tab: 'products', f: 'soon' }, { act: 'filter', f: 'buy' }, { act: 'check' }, { act: 'check', fresh: '1' }, { act: 'applyMemo', id: 'p1', memo: '비밀 메모' }].map(useName),
+    useR.rows, useR.never.includes('발랐어요 체크'), useR.never.includes('오늘 피부 메모'), useR.never.length === new Set(Object.values(USE_NAMES)).size - 2],
+    ['2026-11-18', ['check', 'check:fresh', 'close', 'constructor', 'nodate', 'tick'], [2, ''], {}, {}, true,
+      ['tab:skin', 'tab:soon', 'filter:buy', 'check', 'check:fresh', 'applyMemo'], [['발랐어요 체크', 40, '2026-12-01'], ['AI 루틴 점검', 5, '2026-11-25']], false, true, true],
+    '사용 기록: 이상한 값은 버리고 · 동작 이름엔 탭·걸러 보기만 붙고(제품 id·메모는 안 들어감) · 같은 기능은 묶어 많이 쓴 순 · 표에 없는 동작(닫기 등)은 세기만');
   const KT = Date.UTC(2026, 10, 18), kv = (o = {}, ro = {}) => ({ place: 'home', r: { summary: '요약', points: [{ kind: '조정', title: 't', detail: 'd', product: 2, memo: '', when: 'pm', rest: '', harsh: false, id: 'b', extra: 1 }], at: KT - 3600e3, sent: sig('보낸 글'), ...ro }, ...o });
   const kk = keptCheck(kv(), 'home', KT);
   eq([kk && [kk.summary, kk.points.map(p => [p.id, p.when, 'extra' in p]), kk.at === KT - 3600e3, kk.sent], keptCheck(kv({ place: 'other' }), 'home', KT), keptCheck(kv({}, { at: KT - 8 * 864e5 }), 'home', KT), keptCheck(kv({}, { at: KT + 1 }), 'home', KT),
@@ -2649,6 +2704,7 @@ function selfTest() {
   // 사진 정리는 저장된 상태를 제대로 읽었을 때만(못 읽었는데 지우면 사진을 다 잃는다), 그리고 앱이 이 창 하나에서만 열려 있을 때만 —
   // 처음 연 창이 잠금을 닫힐 때까지 쥐고 있어서, 다른 창이 사진을 쓰는 도중에 지우지 않는다. 잠금을 못 쓰는 브라우저면 정리하지 않는다
   if (loaded) navigator.locks?.request('vanity-sweep', { ifAvailable: true }, lock => lock && sweepPhotos().then(() => new Promise(() => {}))).catch(() => {});
+  usedToday();
   twins(); setTimeout(twins, 3000);
 })();
 // 기록이 가리키지 않는 사진(저장·가져오기가 중간에 실패한 흔적)을 치운다. 키 목록 읽기와 지우기를 한 트랜잭션으로
