@@ -472,8 +472,11 @@ function restNote(s, p, now) {
 // 예민한 주: 가장 최근 피부 기록이 7일 안이고 예민·홍조면 그 상태 이름을, 아니면 '' (앞날짜로 잘못 적은 기록은 무시). 둘 다면 예민
 // 홍조도 넣은 까닭(11-18): 해야 할 일이 예민과 같다(자극 줄이기). 트러블은 각질 성분이 도움이 되기도 해서, 유분·건조는 피부 타입 규칙과 겹치거나 바뀌는 것이 작아서 넣지 않았다
 const CALM_TAGS = ['예민', '홍조'];
+// 「가장 최근 피부 상태」 = 상태를 고른 기록 중 가장 최근 것(같은 날 여럿이면 나중 것). 메모·사진만 있는 기록은 상태를 말하지 않으니 건너뛴다
+// — 안 그러면 「오늘 피부 ✏️」로 메모만 적어도 그 빈 기록이 가장 최근이 되어 예민한 주가 조용히 풀린다 (11-18 검토)
+const lastState = (logs, now) => logs.filter(l => l.date <= now && l.tags.length).reduce((m, l) => (!m || l.date >= m.date ? l : m), null);
 function calmTag(logs, now) {
-  const last = logs.filter(l => l.date <= now).reduce((m, l) => (!m || l.date >= m.date ? l : m), null);
+  const last = lastState(logs, now);
   return (last && daysBetween(last.date, now) <= 7 && CALM_TAGS.find(t => last.tags.includes(t))) || '';
 }
 const isCalm = (logs, now) => !!calmTag(logs, now);
@@ -905,9 +908,9 @@ function viewRoutine() {
   if (!R.manual && !state.products.some(p => p.opened))
     // 등록은 했는데 모두 미개봉이면 그렇게 말한다 — 「등록하러 가기」만 보이면 등록한 것이 사라진 줄 안다 (11-18: 새 장소에 미개봉 선크림을 등록하고 새로고침)
     return state.products.length ? `<div class="empty"><p><b>아직 루틴이 비어 있어요</b></p><p>등록한 화장품 ${state.products.length}개가 모두 미개봉이에요.<br>쓰기 시작한 제품을 화장품 탭에서 「미개봉」을 눌러 개봉으로 바꾸면 루틴에 들어가요.</p>
-      <button class="primary" data-act="tab" data-tab="products">화장품 보러 가기</button></div>`
+      <button class="primary" data-act="tab" data-tab="products" data-f="all">화장품 보러 가기</button></div>`
       : `<div class="empty"><p><b>아직 루틴이 비어 있어요</b></p><p>개봉한 화장품을 등록하면<br>월~일 아침·저녁 루틴이 자동으로 짜여요.</p>
-      <button class="primary" data-act="tab" data-tab="products">화장품 등록하러 가기</button></div>`;
+      <button class="primary" data-act="tab" data-tab="products" data-f="all">화장품 등록하러 가기</button></div>`;
 
   const mark = i => { const g = R.days[i].pm.map(id => byId.get(id)).filter(Boolean).map(group);
     return g.includes('retinol') ? '레티놀' : g.includes('acid') ? '각질' : g.includes('pack') ? '팩' : i === todayIdx() ? '오늘' : ''; };
@@ -931,17 +934,18 @@ function viewRoutine() {
   }
   if (why.length) notes.push(note(why.join(' · '), '', tag ? '<button id="calmDone" data-act="calmDone">가라앉았어요 · 평소 루틴으로</button>' : ''));
   const soft = harshOut(state, now).map(p => esc(p.name)).join(', ');
-  if (soft) notes.push(note(`예민한 주라 쉬는 제품: ${soft}`, '「예민한 주엔 쉼」으로 둔 제품이에요. 가장 최근 피부 기록이 예민·홍조가 아니게 되거나 7일이 지나면 돌아와요.'));
+  if (soft) notes.push(note(`예민한 주라 쉬는 제품: ${soft}`, '「예민한 주엔 쉼」으로 둔 제품이에요. 가장 최근에 고른 피부 상태가 예민·홍조가 아니게 되거나 7일이 지나면 돌아와요.'));
   const gone = state.products.filter(p => p.opened && expired(p, now)).length;
   const guessGone = state.products.filter(p => p.opened && expired(p, now) && !knownExpiry(p)).length;
   if (gone) notes.push(note(`기한 지난 개봉 제품 ${gone}개${R.manual ? '' : ' — 루틴에서 뺐어요'}`,
     guessGone ? `그중 ${guessGone}개는 종류별 보통 사용기간으로 잡은 추정 기한이에요 — 아직 괜찮으면 제품에 실제 기한을 적어 주세요.` : '',
-    '<button data-act="tab" data-tab="products" data-f="soon">보러 가기</button>'));      // 화장품 탭의 「임박·만료」로 — 거기서 눌러 다 썼어요·기한 고치기
+    '<button data-act="tab" data-tab="products" data-f="soon" aria-label="기한 지난 제품 보러 가기">보러 가기</button>'));      // 화장품 탭의 「임박·만료」로 — 거기서 눌러 다 썼어요·기한 고치기
   // 루틴에 안 넣은 제품의 기한이 곧 끝나면 알린다 (offSoon). 하나면 바로 그 제품 창으로, 여럿이면 「임박·만료」로
   const offs = offSoon(state, now), until = p => `${knownExpiry(p) ? '기한' : '추정 기한'}이 ${left(p, now) ? `${left(p, now)}일 남았어요` : '오늘까지예요'}`;
-  if (offs.length) notes.push(note(offs.length === 1 ? `루틴에 안 넣은 ‘${esc(offs[0].name)}’ ${until(offs[0])}` : `루틴에 안 넣은 제품 ${offs.length}개의 기한이 ${SOON}일 안으로 남았어요`,
-    `${offs.length > 1 ? offs.map(p => `· ${esc(p.name)} — ${until(p)}`).join('<br>') + '<br>' : ''}쓰는 때를 「루틴에 안 넣음」으로 둔 제품은 앱이 루틴에 다시 넣지 않아요. 다시 쓰려면 제품을 열어 쓰는 때를 바꿔 주세요.`,
-    offs.length === 1 ? `<button data-act="editProduct" data-id="${esc(offs[0].id)}">열어 보기</button>` : '<button data-act="tab" data-tab="products" data-f="soon">보러 가기</button>'));
+  if (offs.length) notes.push(note(offs.length === 1 ? `루틴에 안 넣은 ‘${esc(offs[0].name)}’ ${until(offs[0])}` : `루틴에 안 넣은 제품 ${offs.length}개의 기한이 ${SOON}일 안에 끝나요`,
+    `${offs.length > 1 ? offs.map(p => `· ${esc(p.name)} — ${until(p)}`).join('<br>') + '<br>' : ''}쓰는 때를 「루틴에 안 넣음」으로 둔 제품은 앱이 루틴에 다시 넣지 않아요. 루틴에 넣으려면 제품을 열어 쓰는 때를 바꿔 주세요.`,
+    offs.length === 1 ? `<button data-act="editProduct" data-id="${esc(offs[0].id)}" aria-label="${esc(offs[0].name)} 열어 보기">열어 보기</button>`
+      : '<button data-act="tab" data-tab="products" data-f="soon" aria-label="루틴에 안 넣은 임박 제품 보러 가기">보러 가기</button>'));
   // 이번 주에 빠진 제품은 펼치면 언제 다시 들어오는지도 — 직접 넣을지 기다릴지 정하기 쉽게 (자동 루틴만: 직접 고친 루틴은 돌아가지 않는다)
   const back = ps => { const t = nextTurns(state, ps.map(p => p.id), now); return `다시 들어오는 때 (지금 제품·설정 그대로면)<br>${ps.map(p => `· ${esc(p.name)} — ${turnName(t.get(p.id))}`).join('<br>')}<br>`; };
   const restPs = missing(state, now, true), rest = restPs.map(p => esc(p.name)).join(', ');      // 자동 루틴일 때만 나온다
@@ -1175,7 +1179,7 @@ async function checkForm(ready, advice) {     // AI 루틴 점검 결과 창 (�
       if (!r.advice && !document.hidden) idb.set('check', { place: state.place, r }).catch(() => {});      // 다시 볼 수 있게 (savedCheck). 숨은 채로는 저장소를 쓰지 않는다 — 이 창을 닫기 전까지는 lastCheck 로 본다
     } else if (r.at) {                        // 받아 둔 답 — 언제 받은 것인지, 그 뒤 보낼 내용이 바뀌었는지 알린다 (새 메모를 적고 눌렀는데 옛 답이라 반영 안 된 줄 모르지 않게)
       const asof = form.querySelector('.asof');
-      asof.textContent = `${whenSaid(r.at)}에 받은 답이에요${r.sent !== sig(routineText(state, today())) ? ' · 그 뒤 바뀐 내용은 「다시 점검」을 눌러야 반영돼요' : ''}`; asof.hidden = false;
+      asof.textContent = `${whenSaid(r.at)}에 받은 답이에요${r.sent !== checkSig(state) ? ' · 그 뒤 바뀐 내용은 「다시 점검」을 눌러야 반영돼요' : ''}`; asof.hidden = false;
     }
     out.textContent = r.summary || (adv ? (r.points.length ? '받은 답에서 반영할 것을 뽑았어요.' : '받은 답에서 앱에 바로 반영할 것을 찾지 못했어요.') : '점검을 마쳤어요.');
     // 제안이 한 제품에 관한 것이면 바로 적용 버튼 (제품은 보낸 목록의 번호로 찾는다 — checkRoutineAI)
@@ -1233,6 +1237,7 @@ const readProduct = f => { const d = new FormData(f);
 
 async function logForm(l) {
   const saved = l?.thumb ? await idb.get('photo:' + l.id).catch(() => null) : null;
+  if (l?.thumb && dlg.open) return;           // 사진을 읽는 사이(저장소가 막혀 있으면 몇 초) 다른 창을 열었으면 그 창을 덮어쓰지 않는다
   const src = isPhoto(saved) ? saved : l?.thumb || '';
   modal(`<form method="dialog" data-form="log" data-id="${esc(l?.id ?? '')}">
     <h2>피부 기록</h2>
@@ -1242,7 +1247,7 @@ async function logForm(l) {
     <p class="ai" role="status" hidden></p>
     <label>날짜 <input type="date" name="date" required max="${today()}" value="${l?.date ?? today()}"></label>
     ${(f => f.length ? help(`🆕 이 무렵(${FRESH_DAYS}일 안) 새로 뜯은 제품 ${f.length}개`, `${f.map(esc).join(', ')}<br>같은 날 ${BULK}개 이상 개봉으로 적힌 날은 한꺼번에 등록한 날로 보고 뺐어요.`) : '')(l ? freshOf(l) : [])}
-    <fieldset><legend>피부 상태 — 가장 최근 기록이 ‘예민’·‘홍조’면 일주일 동안 자동 루틴에서 레티놀·각질케어를 빼요</legend><div class="checks">${TAGS.map(t =>
+    <fieldset><legend>피부 상태 — 가장 최근에 고른 상태가 ‘예민’·‘홍조’면 일주일 동안 자동 루틴에서 레티놀·각질케어를 빼요</legend><div class="checks">${TAGS.map(t =>
       `<label class="pill"><input type="checkbox" name="tags" value="${t}" ${l?.tags.includes(t) ? 'checked' : ''}> ${t}</label>`).join('')}</div></fieldset>
     <label>메모 <textarea name="memo" rows="3" maxlength="500" placeholder="예: 턱에 트러블, 볼이 당김">${esc(l?.memo ?? '')}</textarea></label>
     <div class="actions">${l ? `<button type="button" class="danger" data-act="delLog" data-id="${esc(l.id)}">삭제</button>` : ''}<span class="grow"></span>
@@ -1605,7 +1610,7 @@ function routineText(s, now) {
   const line = p => `- ${no(p)} ${p.name} | ${CATS[p.cat][0]} | 성분: ${p.actives.map(a => ACTIVES[a]).join('·') || '없음'} | 쓰는 때: ${when(p)}${p.when !== 'off' && restOf(p) ? ` | ${restOf(p)}엔 쉼(사용자 설정)` : ''}${p.when !== 'off' && p.harsh ? ' | 예민한 주엔 쉼(사용자 설정)' : ''}`
     + `${expired(p, now) ? ' | 기한 지남' : nearEnd(p, now) ? ` | 기한 ${left(p, now)}일 남음` : ''}${(expired(p, now) || nearEnd(p, now)) && !knownExpiry(p) ? '(종류별 보통 사용기간으로 잡은 추정)' : ''}${p.memo ? ` | 메모: ${p.memo.replace(/\s+/g, ' ')}` : ''}${pairName(p) ? ` | 바로 앞에 함께 바름: ${pairName(p)}` : ''}`;
   const opened = s.products.filter(p => p.opened), sealed = s.products.filter(p => !p.opened);
-  const last = s.logs.filter(l => l.date <= now).reduce((m, l) => (!m || l.date >= m.date ? l : m), null);      // 예민한 주 판정(calmTag)과 같은 기록 — 같은 날 여럿이면 마지막 것
+  const last = lastState(s.logs, now);        // 예민한 주 판정(calmTag)과 같은 기록 — 상태를 고른 것 중 가장 최근
   const memos = skinMemos(s.logs, now);
   return [`[개봉한 제품 = 루틴 대상 ${opened.length}개]`, ...opened.map(line),
     `[아직 안 뜯은 제품 ${sealed.length}개]`, ...sealed.map(p => `- ${no(p)} ${p.name} | ${CATS[p.cat][0]}`),
@@ -1613,7 +1618,7 @@ function routineText(s, now) {
     ...s.routine.days.flatMap((d, i) => [`${DAYS[i]} 아침: ${d.am.map(name).join(' → ') || '없음'}`, `${DAYS[i]} 저녁: ${d.pm.map(name).join(' → ') || '없음'}`]),
     `[지금 계절] ${SEASONS[seasonOf(now)].name}`,
     `[피부 타입] ${skinName(s) || '고르지 않음'}`,
-    `[가장 최근 피부 상태] ${last ? `${last.date}: ${last.tags.join(', ') || '태그 없음'}` : '기록 없음'}`,
+    `[가장 최근 피부 상태] ${last ? `${last.date}: ${last.tags.join(', ')}` : '기록 없음'}`,
     ...(memos.length ? [`[최근 ${MEMO_DAYS}일 피부 기록 메모 — 최신순]`, ...memos] : [])].join('\n');
 }
 // 다른 AI·메모에 붙여 넣을 글: 제품·이번 주 루틴(AI 점검에 보내는 글 그대로) + 앱 규칙 — 화면을 여러 장 찍어 보내지 않아도 되고, 받는 쪽이 앱이 이미 하는 일을 다시 권하지 않게
@@ -1635,12 +1640,12 @@ const readProducts = async (photo, key) => cleanItems(await askGemini([jpeg(phot
 // advice = 다른 AI 에게 받은 답 — 있으면 같은 글 뒤에 붙여 보내고, 점검 대신 그 답에서 반영할 것을 뽑게 한다 (ADVICE_PROMPT)
 async function checkRoutineAI(key, advice) {
   const ids = state.products.map(p => p.id);       // 보낸 때의 번호 — 기다리는 사이 제품이 늘거나 지워져도 밀리지 않게
-  const sent = routineText(state, today());
+  const sent = routineText(state, today()), mark = checkSig(state);      // mark = 이 답이 본 내용의 표시 — 기다리는 사이 고친 것이 섞이지 않게 보내는 순간에 만든다
   const r = advice ? cleanCheck(await askGemini([{ text: `${sent}\n\n[받은 답]\n${advice}` }], key, ADVICE_PROMPT, ADVICE_SCHEMA), ADVICE_MAX)
     : cleanCheck(await askGemini([{ text: sent }], key, CHECK_PROMPT, CHECK_SCHEMA));
   for (const p of r.points) p.id = ids[p.product - 1] || guessProductId(p, state.products);
   if (advice) r.advice = true;                     // 창 제목·안내를 가르는 표시 — 제품 창에 갔다 돌아올 때도 그대로 (checkForm)
-  else Object.assign(r, { at: Date.now(), sent: sig(sent) });      // 점검 답엔 받은 때와 보낸 글의 표시(글 자체가 아니라 짧은 수 — 메모가 든 글의 사본을 남기지 않는다)를 같이 둔다 — 다시 볼 때 언제 받은 답인지·그 뒤 바뀐 것이 있는지 알리려고 (keptCheck)
+  else Object.assign(r, { at: Date.now(), sent: mark });      // 점검 답엔 받은 때와 그때 내용의 표시(글 자체가 아니라 짧은 수 — 메모가 든 글의 사본을 남기지 않는다)를 같이 둔다 — 다시 볼 때 언제 받은 답인지·그 뒤 바뀐 것이 있는지 알리려고 (keptCheck)
   return r;
 }
 // 마지막 AI 점검 답 다시 보기 (11-18): 창을 닫거나 앱을 다시 열어도 AI 를 또 부르지 않고 볼 수 있게 저장소 'check' 칸에 { place, r } 로 둔다 — 무료 등급은 하루 호출 한도가 작다
@@ -1648,6 +1653,9 @@ async function checkRoutineAI(key, advice) {
 // ponytail: 마지막 답 하나만 둔다 — 다른 장소에서 점검하면 덮인다. 장소마다 따로 두려면 칸을 장소별로
 const CHECK_KEEP = 7 * 864e5;                 // 이보다 오래된 답은 보여 주지 않고 새로 받는다 (루틴이 주마다 바뀐다)
 const sig = s => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h; };      // 글이 같은지만 가리는 짧은 수 (어쩌다 겹쳐도 「바뀌었어요」 안내가 한 번 빠질 뿐)
+// 점검에 들어가는 것 중 사용자가 바꾸는 것(화장품·피부 타입·직접 고친 루틴·피부 기록의 날짜·상태·메모)만으로 만든 표시 — 받아 둔 답 뒤로 바뀐 것이 있나 가린다
+// 보낸 글(routineText)로 견주면 「기한 N일 남음」처럼 날마다 달라지는 줄 때문에 다음 날엔 늘 「바뀌었어요」가 떠서, 정작 알리려던 「새 메모를 적었는데 옛 답」 신호가 묻힌다 (11-18 검토)
+const checkSig = s => sig(JSON.stringify([s.products, s.skin, s.routine.manual && s.routine.days, s.logs.map(l => [l.date, l.tags, l.memo])]));
 // 저장해 둔 것(v)을 다시 보여 줘도 되나: 이 장소 것이고 CHECK_KEEP 안이면 정해진 칸으로 다시 정리해서, 아니면 null. 저장소 내용도 믿지 않는다
 function keptCheck(v, place, now) {
   const src = v?.r;
@@ -1793,7 +1801,9 @@ const applied = (d, label) => { for (const b of dlg.querySelectorAll(`[data-act=
 const ACT = {
   tab(d) {
     tab = d.tab; editing = false;
-    if (Object.hasOwn(d, 'f')) { filter = d.f; kindF = query = ''; focusId = 'f-' + d.f; }      // 안내의 「보러 가기」: 그 걸러 보기로 바로 — 안내가 말한 제품이 다 보이게 고른 종류·찾던 글은 푼다(기억해 둔 종류는 그대로 — 다음에 열면 돌아온다)
+    // 안내의 「보러 가기」·빈 루틴 화면의 버튼: 그 걸러 보기로 바로 — 안내가 말한 제품이 다 보이게 고른 종류·찾던 글은 푼다
+    // 종류를 푼 것은 기억에도 적는다(keepView) — 메모리만 비우면 다음에 정렬을 바꿀 때 말없이 같이 지워져서, 언제 풀렸는지 알 수 없게 된다 (11-18 검토)
+    if (Object.hasOwn(d, 'f')) { filter = d.f; kindF = query = ''; keepView(); focusId = 'f-' + d.f; }
     render(); scrollTo(0, 0);
   },
   day(d) { dayIdx = +d.i; render(); },
@@ -1958,6 +1968,7 @@ const ACT = {
   },
   addLog() { logForm(); },
   async skinMemo() {                          // 루틴 화면 「오늘 피부 ✏️」: 오늘 기록(여럿이면 칩이 고치는 그 마지막 것)을 열어 메모 칸으로 — 없으면 새 기록 창
+    if (noSave) return toast('저장된 내용을 읽지 못한 상태예요. 새로고침해 주세요.', true);      // 적어도 저장되지 않는다 (skinTag 와 같은 막기)
     await logForm(state.logs[lastAt(state.logs, today())]);
     const m = dlg.open && dlg.querySelector('[data-form=log] [name=memo]');
     if (m) { m.focus(); m.setSelectionRange(m.value.length, m.value.length); }      // 적어 둔 글 뒤에 이어 쓰게
@@ -2369,6 +2380,16 @@ function selfTest() {
   eq([tagOn('홍조'), tagOn('홍조', '예민', '트러블'), tagOn('유분', '트러블', '홍조'), tagOn('트러블'), tagOn('유분'), tagOn('건조'), tagOn('좋음'), isCalm([{ date: '2026-11-14', tags: ['홍조'] }], '2026-11-16'),
     isCalm([{ date: '2026-11-14', tags: ['홍조'] }, { date: '2026-11-15', tags: ['트러블'] }], '2026-11-16')],
     ['홍조', '예민', '홍조', '', '', '', '', true, false], '홍조도 예민한 주로 본다 (둘 다면 예민) · 트러블·유분·건조·좋음은 루틴을 바꾸지 않는다');
+  // 메모·사진만 있는 기록(상태를 안 고름)은 가장 최근 상태로 치지 않는다 — 「오늘 피부 ✏️」로 메모만 적어도 예민한 주가 풀리지 않게. 「가라앉았어요」(좋음)나 다른 상태를 고르면 풀린다
+  const memoOnly = [{ date: '2026-11-14', tags: ['예민'] }, { date: '2026-11-16', tags: [], memo: '볼이 당김' }];
+  eq([calmTag(memoOnly, '2026-11-16'), calmTag(calmOver(memoOnly.map(cleanLog), '2026-11-16'), '2026-11-16'), calmTag([...memoOnly, { date: '2026-11-16', tags: ['건조'] }], '2026-11-16'),
+    calmTag(memoOnly, '2026-11-22'), lastState(memoOnly, '2026-11-16').date, lastState([{ date: '2026-11-16', tags: [] }], '2026-11-16')],
+    ['예민', '', '', '', '2026-11-14', null], '상태를 안 고른 기록(메모만)은 예민한 주를 풀지 않는다 · 가라앉았어요·다른 상태를 고르면 풀린다 · 7일은 상태를 고른 날부터');
+  const sg0 = cleanState({ products: [P({ id: 'a', name: '세럼', cat: 'serum' })], logs: [{ id: 'l', date: '2026-11-18', tags: ['건조'], memo: '당김' }] });
+  eq([checkSig(cleanState(JSON.parse(JSON.stringify(sg0)))) === checkSig(sg0), checkSig({ ...sg0, ticks: { '2026-11-18': { am: ['a'], pm: [] } }, backupAt: '2026-11-18' }) === checkSig(sg0),
+    checkSig({ ...sg0, logs: [{ ...sg0.logs[0], thumb: 'data:image/jpeg;base64,xx' }] }) === checkSig(sg0), checkSig({ ...sg0, logs: [{ ...sg0.logs[0], memo: '당김 / 저녁엔 괜찮음' }] }) !== checkSig(sg0),
+    checkSig({ ...sg0, products: [{ ...sg0.products[0], when: 'pm' }] }) !== checkSig(sg0), checkSig({ ...sg0, skin: { type: 'dry', sensitive: false } }) !== checkSig(sg0)],
+    [true, true, true, true, true, true], '받아 둔 AI 점검 답의 「그 뒤 바뀜」 표시: 화장품·피부 타입·피부 기록의 상태·메모가 바뀌면 달라지고, 날짜가 지나거나 체크·사진만 바뀌면 그대로');
   // 예민한 주엔 쉼: 표시해 둔 제품은 예민한 주에만 자동 루틴에서 빠진다 (그 자리엔 같은 종류 다른 제품) — 먼저 바를 제품으로도 안 붙고, 「자리 없는 제품」에도 안 넣는다
   const nia = P({ id: 'nia', name: '나이아신 20%', cat: 'serum', when: 'am', harsh: true }), ser = P({ id: 'ser', name: '진정 세럼', cat: 'serum' }), cre = P({ id: 'cre', name: '크림', cat: 'cream', pair: 'nia' });
   const flat = w => w.flatMap(d => [...d.am, ...d.pm]), hs = [nia, ser, cre], red = [{ date: '2026-11-15', tags: ['홍조'] }];
@@ -2542,7 +2563,7 @@ function selfTest() {
     routineText({ products: [], logs: mlogs, routine: { manual: false, days: DAYS.map(() => ({ am: [], pm: [] })) } }, '2026-11-16').split('\n').slice(-6, -4),
     CHECK_PROMPT.includes('피부 기록 메모') && ADVICE_PROMPT.includes('피부 기록 메모')],
     [['- 2026-11-16: 저녁 / AI: 턱에 붉은 기', '- 2026-11-16: 아침', '- 2026-11-15 (건조, 홍조): 볼이 당김 / 저녁에 화끈', '- 2026-11-03: 14일째'], ['m11', 'm10', ' m9', ' m8', ' m7', ' m6', ' m5', ' m4', ' m3', ' m2'], [],
-      ['[가장 최근 피부 상태] 2026-11-16: 태그 없음', '[최근 14일 피부 기록 메모 — 최신순]'], true],
+      ['[가장 최근 피부 상태] 2026-11-15: 건조, 홍조', '[최근 14일 피부 기록 메모 — 최신순]'], true],
     'AI 점검 글에 최근 피부 기록 메모: 메모 있는 기록만 · 14일 안·오늘까지 · 최신순 10건 · 줄바꿈은 「 / 」로');
   const rs = routineText({ products: [P({ name: '레티놀B', cat: 'serum', actives: ['retinol'] }), P({ name: '패드C', cat: 'toner', actives: ['acid'] })], logs: [], routine: { manual: false, days: DAYS.map(() => ({ am: [], pm: [] })) } }, '2026-12-14');
   ok(rs.includes('레티놀B | 세럼·앰플 | 성분: 레티놀 | 쓰는 때: 레티놀 날 저녁(월·수·금) 고정') && rs.includes('쓰는 때: 각질 날 저녁(토) 고정') && rs.includes('[지금 계절] 겨울') && rs.includes('[피부 타입] 고르지 않음'), 'AI 점검 글에 계절과 계절에 맞춘 요일');
