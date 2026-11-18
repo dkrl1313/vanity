@@ -523,6 +523,7 @@ function cleanProduct(p) {
     when: ['am', 'pm', 'off'].includes(p.when) ? p.when : '',      // 쓰는 때: '' = 자동(종류·성분에 맞게), am = 아침만, pm = 저녁만, off = 루틴에 안 넣음(덧바름용·잠시 쉼)
     pair: text(p.pair, 40),                   // 함께 바르기: 이 제품 바로 앞에 바를 제품 id (없는 제품·자기 자신은 cleanState 가 지운다)
     rest: Object.hasOwn(REST, p.rest) ? p.rest : '',      // 쉬는 저녁: '' = 없음, acid·retinol·active(둘 다) = 그 성분을 쓰는 저녁엔 뺀다
+    openedWas: opened ? date(p.openedWas) : '',      // 개봉일을 확인(직접 고치거나 「개봉일 바로잡기」에서 고름)하기 전에 적혀 있던 날 — 있으면 확인한 제품. 비었으면 등록한 날이 그대로 들어간 것일 수 있다 (openedDoubt)
     harsh: !!p.harsh,                         // 예민한 주엔 쉼: 앱이 자극 성분인지 모르는 제품(고함량 나이아신아마이드 등)을 사용자가 표시 — 예민한 주엔 자동 루틴에서 뺀다 (generate)
   };
 }
@@ -636,11 +637,24 @@ function buyText(s, now) {
 // 모든 장소의 제품과 다 쓴 제품(안 맞아 금방 정리했을 수도)을 본다
 // ponytail: 같은 날 BULK 개 이상 개봉으로 적힌 날은 앱에 한꺼번에 등록한 날로 보고 뺀다 — 등록하면 개봉일이 그날로 들어가 실제로 뜯은 날이 아니다(11-18 실제 데이터: 38개가 등록한 이틀에 몰림). 세트를 한날 뜯은 경우까지 가리려면 「등록한 날」을 따로 저장해야 한다
 const FRESH_DAYS = 14, BULK = 4;
+const everOpened = s => ['products', 'done'].flatMap(k => shelves(s, k).flatMap(([, list]) => list)).filter(p => p.openedAt);      // 개봉일이 적힌 것 전부 (모든 장소 + 다 쓴 제품)
+const firstDay = p => p.openedWas || p.openedAt;      // 처음 적혀 있던 개봉일 (바로잡아 옮긴 제품은 옮기기 전 날)
+// 처음 적힌 개봉일 → 그날 것으로 적힌 개수. 옮기기 전 날로 세어야 바로잡는 중에 그날 묶음이 BULK 아래로 줄어 남은 제품이 대상에서 빠지지 않는다
+// ponytail: 다 쓴 제품 기록엔 openedWas 가 없어, 바로잡은 제품을 다 쓰면 그날 개수가 하나 준다 — 문제가 되면 cleanDone 에도 남긴다
+const openedDays = s => everOpened(s).reduce((n, p) => (n[firstDay(p)] = (n[firstDay(p)] ?? 0) + 1, n), {});
 function freshAt(s, day) {
-  const all = ['products', 'done'].flatMap(k => shelves(s, k).flatMap(([, list]) => list)).filter(p => p.openedAt), n = {};
-  for (const p of all) n[p.openedAt] = (n[p.openedAt] ?? 0) + 1;
-  return [...new Set(all.filter(p => p.openedAt <= day && p.openedAt >= addDays(day, -FRESH_DAYS) && n[p.openedAt] < BULK).sort((a, b) => b.openedAt.localeCompare(a.openedAt)).map(p => p.name))];
+  const all = everOpened(s), n = openedDays(s);      // 옮긴 개봉일(firstDay 와 다름)은 뺀다 — 바로잡기의 어림은 2주를 가리기엔 거칠다. ponytail: 제품 창에서 정확히 고친 날도 같이 빠진다(어림과 구분하려면 칸이 하나 더 필요)
+  return [...new Set(all.filter(p => p.openedAt <= day && p.openedAt >= addDays(day, -FRESH_DAYS) && n[firstDay(p)] < BULK && firstDay(p) === p.openedAt).sort((a, b) => b.openedAt.localeCompare(a.openedAt)).map(p => p.name))];
 }
+// 개봉일 바로잡기: 개봉 상태로 등록하면 개봉일이 등록한 날로 들어가, 개봉일로 셈하는 기한(개봉 후 사용기간·종류별 추정)이 실제보다 늦게 잡힌다
+// 대상(이 장소, 이름순) = 개봉일이 한꺼번에 등록한 날(같은 날 BULK 개 이상)이고, 아직 확인하지 않았고(openedWas 가 빔), 개봉일이 당겨지면 기한이 달라지는 제품 — 적힌 기한만으로 정해지는 제품은 묻지 않는다
+function openedDoubt(s) {
+  const n = openedDays(s);
+  return s.products.filter(p => p.opened && p.openedAt && !p.openedWas && n[p.openedAt] >= BULK && expiryOf(p) !== expiryOf({ ...p, openedAt: agoDate(p.openedAt, 0, 12) }))      // 1년 당겨 보아 기한이 달라지나
+    .sort((a, b) => a.name.localeCompare(b.name, 'ko')).map(p => p.id);
+}
+// 고른 날(at, 제품 창의 「언제쯤 뜯었나요」와 같은 선택지 — AGO)로 개봉일을 당긴다. at = '' 이면 적힌 날 그대로. 적혀 있던 날(등록한 날)보다 늦어지지는 않는다(등록할 때 이미 뜯은 것이니). 어느 쪽이든 적혀 있던 날을 openedWas 에 남겨 확인한 것으로 표시 (이미 남아 있으면 그대로 — 처음 적힌 날을 잃지 않게)
+const openedSet = (p, at) => ({ ...p, openedAt: at && at < p.openedAt ? at : p.openedAt, openedWas: p.openedWas || p.openedAt });
 const countAll = s => s.products.length + Object.values(s.away).reduce((n, a) => n + a.products.length, 0);      // 모든 장소의 화장품 수
 
 /* ───────── 같이 쓰기 — 계산 (화장품·다 쓴 제품 목록만 Firebase 주소 한 곳에 두고 여러 기기가 맞춘다. 피부 타입·피부 기록·체크·루틴은 기기마다 따로) ───────── */
@@ -742,6 +756,7 @@ let queue = [];                               // 사진 한 장에서 읽은 화
 // lastCheck = 마지막 AI 점검 답. checkBack = 점검 창의 「열어 고치기」로 제품 창을 열었을 때 그 답 — 제품 창이 닫히면 이것으로 점검 창에 돌아온다 (AI 에 다시 묻지 않음)
 let lastCheck = null, checkBack = null, lastAdvice = '';      // lastAdvice = 방금 붙여 넣은 다른 AI 답 (저장하지 않음 — adviceForm)
 let rebuyFor = null;                          // 「다시 샀어요」로 연 등록 창이면 그 다 쓴 기록 id — 저장하면 「또 살래요」를 끈다
+let fix = null;                               // 개봉일 바로잡기: { ids: 물을 제품 순서, i: 지금 몇 번째 }
 let fill = null;                              // 기한 하나씩 채우기: { ids: 채울 제품 순서, i: 지금 몇 번째, done: 기한이 생긴 수 }
 const BACKUP_MAX = 300 * 2 ** 20;             // ponytail: 폰 메모리로 한 번에 읽을 수 있는 백업 크기. 사진이 아주 많이 쌓이면 백업을 나눠야 한다
 
@@ -796,7 +811,7 @@ function commit() {                           // 모든 변경의 끝: 자동 �
 const manual = () => { state.routine.manual = true; commit(); };
 // 장소가 바뀌면 앞 장소에 딸린 것을 내려놓는다: 고치던 창·찾던 글·사진에서 읽어 둔 줄·AI 점검 답, 그리고 같이 쓰기 연결(장소마다 따로라 맞추기가 새 장소 것을 다시 읽는다)
 function leftPlace() {
-  placeGen++; sync = null; syncErr = ''; editing = false; filter = 'all'; query = ''; queue = []; fill = lastCheck = checkBack = rebuyFor = null; lastAdvice = '';
+  placeGen++; sync = null; syncErr = ''; editing = false; filter = 'all'; query = ''; queue = []; fill = fix = lastCheck = checkBack = rebuyFor = null; lastAdvice = '';
   if (dlg.open) dlg.close();
 }
 function toPlace(next, show) {                      // 장소 바꾸기·추가·지우기의 끝 (next = goPlace·addPlace·dropPlace 가 돌려준 것. 그대로면 아무것도 안 한다)
@@ -1001,6 +1016,7 @@ function viewProducts() {
         + (filter !== 'done' ? `<label><span>정렬</span><select id="sort">${Object.entries(SORTS)
         .map(([k, n]) => `<option value="${k}" ${k === sortBy ? 'selected' : ''}>${n}</option>`).join('')}</select></label>` : '') + '</div>' : '')
       + ((n => n && (filter === 'all' || filter === 'none') ? `<button id="fill" class="wide" data-act="fillNext">📷 기한 모르는 ${n}개 하나씩 채우기</button>` : '')(rows.filter(r => !r.k).length))
+      + ((n => n && filter === 'all' ? `<button id="fixOpen" class="wide" data-act="fixNext">🗓 등록한 날로 들어간 개봉일 ${n}개 바로잡기</button>` : '')(openedDoubt(state).length))
       + (filter === 'buy' ? '<button id="buyCopy" class="wide" data-act="copyBuy">📋 살 것 목록 글로 복사</button>' : '')
       + (cards ? cards + '<p id="noHit" class="empty" hidden>찾는 화장품이 없어요. 띄어쓰기 없이 이름 일부만 쳐 보세요.</p>' : '<p class="empty">해당하는 화장품이 없어요</p>')
     : '<div class="empty"><p><b>등록된 화장품이 없어요</b></p><p>「＋ 직접 등록」에서 사진으로 채우면 AI가 이름·종류·기한을 읽어 줘요. 한 장에 여러 개를 찍어도 돼요. 뒷면(전성분·사용기한)이 보이게 찍으면 성분까지 채워요.<br>이름만 적어도 종류를 골라 줘요.</p></div>'
@@ -1069,6 +1085,19 @@ function fillGo(step) {                       // 기한 채우기: 다음 제품
   if (fill.i < fill.ids.length) return productForm(product(fill.ids[fill.i]));
   const done = fill.done; fill = null; shut();
   toast(done ? `기한 채우기를 마쳤어요. ${done}개에 기한이 생겼어요` : '기한 채우기를 마쳤어요');
+}
+function fixGo(step, said) {                  // 개봉일 바로잡기: 다음 제품을 묻는다 (그사이 지운 제품은 건너뛴다). said = 방금 고친 제품 알림 — 끝날 때 「마쳤어요」에 덮이지 않게 이어 붙인다
+  fix.i += step;
+  const todo = p => p && p.opened && !p.openedWas;      // 그사이 지웠거나, 다른 창·기기에서 이미 확인했거나, 미개봉으로 바뀐 제품은 건너뛴다
+  while (fix.i < fix.ids.length && !todo(product(fix.ids[fix.i]))) fix.i++;
+  const p = product(fix.ids[fix.i]), e = p && expiryOf(p);
+  if (!p) { fix = null; shut(); return toast(`${said ? said + ' · ' : ''}개봉일 바로잡기를 마쳤어요`); }
+  fix.at = Date.now();                        // 이 제품을 보여 준 때 — 바로 뒤의 연타는 받지 않는다 (fixPick)
+  modal(`<form method="dialog"><h2>개봉일 바로잡기 <small>· ${fix.i + 1}/${fix.ids.length}</small></h2>
+    <p><b>${esc(p.name)}</b><br><small class="muted">${CATS[p.cat][0]} · 지금 개봉일 ${p.openedAt}${e ? ` · 기한 ${e}${knownExpiry(p) ? '' : '(추정)'}` : ''}</small></p>
+    <p>언제쯤 뜯었나요? <small class="muted">등록한 날이 개봉일로 들어가 있어요</small></p>
+    <div class="checks"><button type="button" data-act="fixPick">최근 (그대로)</button>${AGO.filter(a => a[2]).map(([name, d, m]) => `<button type="button" data-act="fixPick" data-d="${d}" data-m="${m}">${name}</button>`).join('')}</div>
+    <div class="actions"><button type="button" data-act="fixPick">모르겠어요</button><span class="grow"></span><button type="button" data-act="fixStop">그만</button></div></form>`);
 }
 // ready = 받아 둔 답(「열어 고치기」로 제품 창에 갔다 돌아올 때) — AI 에 다시 묻지 않고 지금 설정에 맞춰 버튼만 다시 그린다
 // advice = 다른 AI 에게 받은 답(붙여 넣은 글) — 있으면 점검 대신 그 답에서 반영할 것만 뽑아 같은 창에 버튼으로 보여 준다
@@ -1728,6 +1757,21 @@ const ACT = {
   fillNext() { fill = { ids: fillOrder(state.products), i: 0, done: 0 }; fillGo(0); },
   fillSkip() { if (fill) fillGo(1); },
   fillStop() { fill = null; shut(); },
+  fixNext() { fix = { ids: openedDoubt(state), i: 0 }; fixGo(0); },
+  async fixPick(d) {                          // 고른 때로 개봉일을 당기고(최근·모르겠어요 = 그대로) 확인한 것으로 표시 → 저장되면 다음 제품
+    const run = fix; if (!run || run.busy || Date.now() - run.at < 400) return;      // 저장 중이거나 방금 넘어온 직후의 연타는 받지 않는다 — 보지 못한 다음 제품에 답이 들어가지 않게
+    const p = product(run.ids[run.i]);
+    if (!p || !p.opened || p.openedWas) return fixGo(0);      // 창을 띄워 둔 사이 지워졌거나 다른 창·기기에서 이미 확인했으면 다음으로
+    const was = p.openedAt; Object.assign(p, openedSet(p, AGO.some(a => a[2] && a[1] === +d.d && a[2] === +d.m) ? agoDate(today(), +d.d, +d.m) : ''));
+    let saved; run.busy = true;
+    try { saved = await commit(); } finally { run.busy = false; }      // 저장·다시 그리기에서 오류가 나도 창이 먹통이 되지 않게
+    if (fix !== run) return;                  // 저장을 기다리는 사이 그만뒀거나 장소가 바뀌었다
+    if (!saved) return fixGo(0);              // 저장이 안 됐으면(알림은 save 가 띄운다) 바꿨다고 하지 않고, 지금 저장소 기준으로 다시 묻는다
+    const e = expiryOf(p);
+    const said = `‘${p.name}’ ${p.openedAt !== was ? `개봉일을 ${p.openedAt}쯤으로 바꿨어요` : '개봉일은 그대로 뒀어요'}${e ? ` · 기한 ${e}${knownExpiry(p) ? '' : '(추정)'}${expired(p, today()) ? ' — 지났어요' : ''}` : ''}`;
+    toast(said); fixGo(1, said);
+  },
+  fixStop() { fix = null; shut(); },
   open(d) {                                   // 미개봉 → 오늘 개봉 (개봉하면 루틴에 들어간다). 개봉일이 실수로 찍히지 않게 한 번 묻는다
     const p = product(d.id); if (!p || p.opened) return;
     if (!confirm(`‘${p.name}’을(를) 오늘 개봉한 것으로 기록할까요?\n개봉하면 루틴에 들어가요.`)) return;
@@ -1955,6 +1999,9 @@ dlg.addEventListener('submit', async e => {
     const dup = i < 0 ? sameName(state.products, p) : null;      // 새로 등록할 때만 묻는다 — 여분을 따로 등록하는 것일 수도 있으니 막지는 않는다
     if (dup && !confirm(`‘${dup.name}’은(는) 이미 등록돼 있어요 (${dup.opened ? '개봉' : '미개봉'}).\n여분이라 따로 등록하는 거면 확인을 눌러 주세요.`)) return;
     const prev = state.products[i];
+    // 개봉일 확인 표시(창에 칸이 없어 여기서 이어 준다): 이미 확인했으면 그대로, 적혀 있던 개봉일을 이번에 바꿨으면 그 전 날을 남긴다(미개봉을 개봉으로 바꾼 것은 실제로 뜯은 것이라 표시가 필요 없다)
+    // 새 제품은 오늘이 아닌 날을 직접 적었을 때만 확인한 것 — 오늘 그대로면 등록한 날일 수 있다
+    p.openedWas = !p.opened ? '' : prev ? prev.openedWas || (p.openedAt !== prev.openedAt ? prev.openedAt : '') : p.openedAt !== today() ? p.openedAt : '';
     i < 0 ? state.products.push(p) : (state.products[i] = p);
     if (p.when !== (prev?.when ?? '')) dropClash(p);
     if (state.routine.manual && p.rest !== (prev?.rest ?? '')) dropRest(state.routine.days, state.products, p);
@@ -2308,9 +2355,9 @@ function selfTest() {
   eq(cleanAnalysis({ ok: true, tags: [], summary: '볼이 붉어요.\n\n피부과 상담을 권해요.' }).summary, '볼이 붉어요. 피부과 상담을 권해요.', 'AI 요약은 한 줄로');
   eq([...cleanItems({ items: [{ name: ' 라운드랩\n독도  토너 ', cat: 'toner', actives: ['acid', 'x'], expiry: '2027-06-31', pao: 12, opened: true, inUse: true },
     { name: '', cat: 'serum' }, { name: 'B', cat: 'nope', pao: 5, expiry: '2027-06-30' }, 'junk', { name: '구달 청귤 비타C 세럼', cat: 'serum', actives: [] }] }).map(({ id, ...p }) => p), cleanItems(null)],
-    [{ name: '라운드랩 독도 토너', cat: 'toner', actives: ['acid'], expiry: '', opened: false, openedAt: '', pao: 12, memo: '', when: '', pair: '', rest: '', harsh: false },
-      { name: 'B', cat: 'etc', actives: [], expiry: '2027-06-30', opened: false, openedAt: '', pao: 0, memo: '', when: '', pair: '', rest: '', harsh: false },
-      { name: '구달 청귤 비타C 세럼', cat: 'serum', actives: ['vitc'], expiry: '', opened: false, openedAt: '', pao: 0, memo: '', when: '', pair: '', rest: '', harsh: false }, []], 'AI가 읽은 화장품 정리 (이름에 보이는 성분은 채움)');
+    [{ name: '라운드랩 독도 토너', cat: 'toner', actives: ['acid'], expiry: '', opened: false, openedAt: '', pao: 12, memo: '', when: '', pair: '', rest: '', openedWas: '', harsh: false },
+      { name: 'B', cat: 'etc', actives: [], expiry: '2027-06-30', opened: false, openedAt: '', pao: 0, memo: '', when: '', pair: '', rest: '', openedWas: '', harsh: false },
+      { name: '구달 청귤 비타C 세럼', cat: 'serum', actives: ['vitc'], expiry: '', opened: false, openedAt: '', pao: 0, memo: '', when: '', pair: '', rest: '', openedWas: '', harsh: false }, []], 'AI가 읽은 화장품 정리 (이름에 보이는 성분은 채움)');
   eq(cleanCheck({ summary: ' 전반적으로\n좋아요 ', points: [{ kind: '조정', title: '크림은 저녁만', detail: '에스트라 크림의 쓰는 때를\n저녁만으로' }, { kind: '<b>', title: 'x', detail: 'y' }, { kind: '좋음', title: '', detail: '' }, 'junk'] }),
     { summary: '전반적으로 좋아요', points: [{ kind: '조정', title: '크림은 저녁만', detail: '에스트라 크림의 쓰는 때를 저녁만으로', product: 0, memo: '', when: '', rest: '', harsh: false }] }, 'AI 루틴 점검 답 정리');
   eq(cleanCheck({ points: [{ kind: '조정', title: 't', detail: 'd', product: 3, memo: '볼에만 얇게', when: 'am', rest: 'acid' }, { kind: '주의', title: 't', detail: 'd', product: '에스트라 크림', when: 'noon', rest: 'always' },
@@ -2349,7 +2396,7 @@ function selfTest() {
 
   const cs = cleanState({ products: [{ id: 'a', name: ' A ', cat: 'constructor', pao: 5, actives: ['x', 'vitc'], inUse: 1 }, { id: 'a', name: '중복' }, { name: '  ' }, 7],
     routine: { manual: 1, days: [{ am: ['a', 'a', 'ghost'], pm: 'x' }] }, logs: [{ id: 'l', date: 'nope', thumb: 'javascript:alert(1)', tags: ['예민', '<b>'] }] });
-  eq(cs.products, [{ id: 'a', name: 'A', cat: 'etc', actives: ['vitc'], expiry: '', opened: true, openedAt: '', pao: 0, memo: '', when: '', pair: '', rest: '', harsh: false }], '가져온 화장품 정리 (옛 사용중 = 개봉)');
+  eq(cs.products, [{ id: 'a', name: 'A', cat: 'etc', actives: ['vitc'], expiry: '', opened: true, openedAt: '', pao: 0, memo: '', when: '', pair: '', rest: '', openedWas: '', harsh: false }], '가져온 화장품 정리 (옛 사용중 = 개봉)');
   eq([cs.routine.manual, cs.routine.days.length, cs.routine.days[0], cs.logs[0].thumb, cs.logs[0].tags, cs.logs[0].date === today()], [true, 7, { am: ['a'], pm: [] }, '', ['예민'], true], '가져온 루틴·기록 정리');
   eq(cleanState(cleanState(undefined)), { products: [], routine: { manual: false, until: '', days: DAYS.map(() => ({ am: [], pm: [] })) }, done: [], ticks: {}, logs: [], backupAt: '', skin: { type: '', sensitive: false },
     places: [{ id: 'home', name: '집' }], place: 'home', away: {} }, '빈 상태 (장소 칸이 없던 옛 기록은 장소 하나짜리)');
@@ -2443,6 +2490,18 @@ function selfTest() {
     done: [{ id: 'fd', name: '금방 정리한 토너', openedAt: '2026-11-14', doneAt: '2026-11-15' }], away: { b: { products: [P({ id: 'fa', name: '본가 앰플', openedAt: '2026-11-15' }), P({ id: 'fb', name: '새 세럼', openedAt: '2026-11-08' })] } } });
   eq([freshAt(fs, '2026-11-16'), freshAt(fs, '2026-10-20'), freshAt(cleanState({}), '2026-11-16')], [['본가 앰플', '금방 정리한 토너', '새 세럼', '경계'], [], []],
     '피부 기록 무렵 새로 뜯은 제품: 앞 14일 안(그날 포함)·최근 것부터·모든 장소와 다 쓴 제품 포함·같은 이름은 한 번 · 미개봉·기록 뒤에 뜯은 것·같은 날 4개 이상(한꺼번에 등록한 날)은 뺌');
+  const od = cleanState({ places: [{ id: 'home', name: '자취방' }, { id: 'b', name: '본가' }],
+    products: [P({ id: 'o1', name: '다', cat: 'cream', openedAt: '2026-11-16' }), P({ id: 'o2', name: '가', cat: 'toner', openedAt: '2026-11-16', pao: 12, expiry: '2028-01-01' }), P({ id: 'o3', name: '기한 적힘', cat: 'cream', openedAt: '2026-11-16', expiry: '2027-01-01' }),
+      P({ id: 'o4', name: '확인함', cat: 'cream', openedAt: '2026-11-16', openedWas: '2026-11-16' }), P({ id: 'o5', name: '메이크업', cat: 'makeup', openedAt: '2026-11-16' }), P({ id: 'o6', name: '혼자 뜯음', cat: 'cream', openedAt: '2026-11-10' }), P({ id: 'o7', name: '미개봉', cat: 'cream', opened: false })],
+    away: { b: { products: [P({ id: 'o8', name: '본가 것', cat: 'cream', openedAt: '2026-11-16' })] } } });
+  const os = (at, was = '2026-11-16') => { const q = openedSet(P({ openedAt: was }), at); return [q.openedAt, q.openedWas]; };
+  // 넷이 한날 등록됐고 둘을 바로잡아 옮겼어도(옮기기 전 날로 센다) 남은 둘은 여전히 대상
+  const moved = cleanState({ products: [P({ id: 'm1', name: '가', cat: 'cream', openedAt: '2026-08-16', openedWas: '2026-11-16' }), P({ id: 'm2', name: '나', cat: 'cream', openedAt: '2026-05-16', openedWas: '2026-11-16' }),
+    P({ id: 'm3', name: '다', cat: 'cream', openedAt: '2026-11-16' }), P({ id: 'm4', name: '라', cat: 'cream', openedAt: '2026-11-16' })] });
+  eq([openedDoubt(od), openedDoubt(goPlace(od, 'b')), openedDoubt(cleanState({})), openedDoubt(moved), freshAt(moved, '2026-08-20'), os(''), os(agoDate('2026-11-18', 0, 1)), os(agoDate('2026-11-18', 0, 12)), os('2026-10-18', '2026-09-01'), openedSet(P({ openedAt: '2026-08-16', openedWas: '2026-11-16' }), '2026-05-01').openedWas,
+    cleanProduct({ openedWas: '2026-11-16' }).openedWas, cleanProduct({ opened: true, openedWas: '2026-11-16' }).openedWas, cleanProduct({ opened: true, openedWas: 'x' }).openedWas],
+    [['o2', 'o1'], ['o8'], [], ['m3', 'm4'], [], ['2026-11-16', '2026-11-16'], ['2026-10-18', '2026-11-16'], ['2025-11-18', '2026-11-16'], ['2026-09-01', '2026-09-01'], '2026-11-16', '', '2026-11-16', ''],
+    '개봉일 바로잡기: 한꺼번에 등록한 날(같은 날 4개 이상 — 옮기기 전 날로 셈)·확인 안 함·개봉일이 당겨지면 기한이 달라지는 이 장소 제품만 이름순 · 고른 날로 당김(적힌 날보다 늦어지진 않음)·적혀 있던 날을 남김 · 어림으로 옮긴 제품은 「새로 뜯은 제품」에 안 나옴 · 미개봉엔 표시가 안 남음');
   eq([buyText(cleanState({ ...bs, products: [P({ id: 't1', name: '새 토너', cat: 'toner', opened: false }), P({ id: 't2', name: '또 토너', cat: 'toner', opened: false })] }), '2026-11-16'),
     buyText(cleanState({ done: [{ name: 'x', cat: 'serum', again: true }] }), '2026-11-16')],
     ['「화장대」 살 것 4개\n[본가]\n- 본가 크림 (크림)\n- 본가 토너 (토너·스킨) · 미개봉 있음: 새 토너(본가) 외 1개\n[자취방]\n- 자취방 토너 (토너·스킨) · 미개봉 있음: 새 토너(본가) 외 1개\n- 자취방 세럼 (세럼·앰플)', '「화장대」 살 것 1개\n- x (세럼·앰플)'],
