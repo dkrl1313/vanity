@@ -2009,6 +2009,7 @@ dlg.addEventListener('close', e => { if (e.target === dlg && !dlg.open) checkBac
 dlg.addEventListener('submit', async e => {
   e.preventDefault();
   const f = e.target, d = new FormData(f);
+  let added = null;                           // 이번에 새로 등록한 화장품 (맨 아래: 화면에 안 나오면 알림)
   if (f.dataset.form === 'product') {
     const p = readProduct(f);
     if (!p.name) return;
@@ -2033,6 +2034,7 @@ dlg.addEventListener('submit', async e => {
       if (knownExpiry(p)) fill.done++;
       commit(); toast(went || `‘${p.name}’ 저장했어요${knownExpiry(p) ? ` · ${knownExpiry(p)}까지` : ''}`); return fillGo(1);      // 옮겼으면 그 말이 다음 알림에 덮이지 않게
     }
+    if (!f.dataset.id) added = p;
   } else if (f.dataset.form === 'log') {
     if (f.inert) return;                      // 사진을 저장하는 사이 한 번 더 눌러도 기록이 둘 생기지 않게
     const old = state.logs.find(l => l.id === f.dataset.id);
@@ -2057,6 +2059,9 @@ dlg.addEventListener('submit', async e => {
   else return shut();
   if (f.isConnected) shut();            // 저장을 기다리는 사이 다른 창을 열었으면 그 창은 두고
   commit();
+  // 새로 등록한 화장품이 지금 화면에 안 나오면(살 것·다 쓴 제품 보기, 다른 걸러 보기·고른 종류·찾는 글) 등록됐다고 알린다 — 안 된 줄 알고 한 번 더 넣지 않게
+  const card = added && document.getElementById('p-' + added.id);
+  if (added && (!card || card.closest('[hidden]'))) toast(`‘${added.name}’을(를) ${added.opened ? '' : '미개봉으로 '}등록했어요`);
 });
 
 // 폰은 다음 날 탭을 다시 열어도 페이지를 새로 불러오지 않고 되살리기만 한다 → 날이 바뀌었으면 오늘 기준으로 다시 짠다
