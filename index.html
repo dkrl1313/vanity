@@ -823,17 +823,23 @@ let seen;                                     // 이 창이 마지막으로 저�
 // behind: 저장소의 최신 내용을 아직 못 읽었다(다시 읽기가 실패했거나, 숨은 사이 다른 창이 저장했다). 이 동안은 그대로 쓰지 않는다 — 옛 내용으로 다른 창이 고친 것을 덮어쓰게 된다
 // 먼저 다시 읽어서, 저장소가 그대로였으면 이어서 저장하고, 다른 창 것으로 바뀌었으면 방금 고친 것은 버려졌다고 알린다. 끝내 못 읽으면 저장하지 않고 알린다
 let behind = false;
+// owed: 저장소를 못 읽어 저장을 포기한 변경이 화면에만 남아 있다 — 다시 보여 읽히면 그때 저장한다 (wake). 안 그러면 ✓ 는 보이는데 탭을 닫으면 사라진다
+let owed = false;
+// loads: reload 가 state 를 저장소 내용으로 바꾼 횟수 — 기다리는 사이 「다른 창 것으로 바뀌었나」는 이것으로 본다
+// (state 객체가 달라졌나로 보면 안 된다: 같이 쓰기 맞추기도 state 를 새 객체로 바꾸는데, 그건 방금 고친 것을 들고 간다 — 저장됐는데 「다시 해 주세요」가 떠서 한 번 더 누르면 체크가 풀린다)
+let loads = 0;
 const save = () => {
   if (noSave) return Promise.resolve(false);
   if (behind) {
-    const was = state;
+    const g = loads;
     return reload().then(ok => {
-      if (!ok) return toast('저장소를 읽지 못해 방금 고친 내용을 저장하지 못했어요. 잠시 뒤 다시 해 주세요.', true), false;
-      if (state !== was) return toast('다른 창에서 바뀐 내용을 불러왔어요. 방금 고친 것은 다시 해 주세요.', true), false;
+      if (!ok) return owed = true, toast('저장소를 읽지 못해 방금 고친 내용을 저장하지 못했어요. 잠시 뒤 다시 해 주세요.', true), false;
+      if (loads !== g) return toast('다른 창에서 바뀐 내용을 불러왔어요. 방금 고친 것은 다시 해 주세요.', true), false;
       return JSON.stringify(state) !== seen ? save() : true;
     });
   }
-  const s = JSON.stringify(state);
+  // owed 는 쓰기를 걸 때 내린다(지금 state 에 화면의 변경이 다 들어 있다) — 끝날 때 내리면, 먼저 걸려 막혀 있던 옛 쓰기가 늦게 끝나면서 그 뒤에 포기한 변경의 표시까지 지운다
+  const s = JSON.stringify(state); owed = false;
   return idb.set(STATE_KEY, state).then(() => (seen = s, bc?.postMessage('saved'), true), e => (fail(e), false));
 };
 // 자동 루틴이면 다시 짠다. 직접 고친 루틴은 그대로 둔다 — 자동 때 순한 세안·먼저 바를 제품으로 들어간 자리도 사용자 것이 된다
@@ -1390,7 +1396,8 @@ async function importFile(file) {
       if (id === next.place) mine = rec;
     }
     await idb.set(STATE_KEY, next);
-    noSave = behind = false;                  // 가져온 내용이 저장됐으니 이제부터 고친 것도 저장한다
+    noSave = behind = owed = false;           // 가져온 내용이 저장됐으니 이제부터 고친 것도 저장한다
+    seen = JSON.stringify(next);              // 저장소와 맞춘 내용도 새로 — 안 그러면 바로 뒤에 온 다른 창 알림의 다시 읽기가 같은 내용을 「바뀐 것」으로 보고 「다시 해 주세요」를 띄운다
     state = next; sync = mine;                // 백업에서 고르고 있던 장소로 바뀐다 — 같이 쓰기 연결도 그 장소 것으로
   };
   // 맞추기와 같은 잠금 안에서 바꾼다 — base 를 비운 뒤 새 목록으로 바뀌기 전에 맞추기가 끼어들면, 옛 목록으로 base 가 다시 채워져 백업에 없는 화장품이 서버에서 지워진다
@@ -2191,9 +2198,10 @@ dlg.addEventListener('submit', async e => {
 });
 
 // 폰은 다음 날 탭을 다시 열어도 페이지를 새로 불러오지 않고 되살리기만 한다 → 날이 바뀌었으면 오늘 기준으로 다시 짠다
-function refresh() {
-  if (document.hidden || !state || shownDay === today()) return;
+function refresh() {                          // 다시 짜서 저장했으면 true
+  if (document.hidden || !state || shownDay === today()) return false;
   shownDay = today(); dayIdx = todayIdx(); commit();
+  return true;
 }
 // 다른 창이 저장했거나 이 창이 다시 보이면 저장소의 최신 내용으로 바꾼다 (못 읽었던 상태면 건드리지 않음)
 // 읽었으면 true(바뀐 것이 없어도), 못 읽었으면 false — 못 읽은 동안은 저장·맞추기가 옛 내용으로 나가지 않게 behind 를 세운다 (save·syncOnce)
@@ -2205,13 +2213,17 @@ async function reload() {
     // 바뀐 게 없으면 다시 그리지 않는다 — 폰은 사진 찍기·고르기에서 돌아오면 이게 사진보다 먼저 돌아서, 다시 그리면 사진이 사라진 입력 칸으로 간다
     if (saved == null || s === seen) return true;
     const was = state.place;
-    seen = s; state = cleanState(saved);
+    // 저장을 포기해 화면에만 있던 변경(owed)은 다른 창 것으로 바뀌며 사라진다 — 조용히 없어지지 않게 알린다 (save 가 기다리던 중이면 그쪽 알림이 뒤이어 덮는다)
+    if (owed) toast('다른 창에서 바뀐 내용을 불러왔어요. 저장하지 못했던 것은 다시 해 주세요.', true);
+    seen = s; state = cleanState(saved); owed = false; loads++;
     if (state.place !== was) leftPlace();     // 다른 창에서 장소를 바꿨다 — 앞 장소 것을 고치던 창과 같이 쓰기 연결을 내려놓는다 (그 창에서 저장하면 엉뚱한 장소에 들어간다)
     arrange(); render();
     return true;
   } catch { behind = true; return false; }     // 저장소가 응답하지 않거나(다른 탭이 붙잡고 있음) 읽기 오류
 }
-bc?.addEventListener('message', () => { if (document.hidden) behind = true; else reload(); });      // 숨은 탭은 읽지 않고 표시만 해 둔다 — 다시 보일 때 읽는다 (숨은 채 저장소를 쓰다 얼면 다른 탭의 저장을 막는다)
+// 숨은 탭은 읽지 않고 표시만 해 둔다 — 다시 보일 때 읽는다 (숨은 채 저장소를 쓰다 얼면 다른 탭의 저장을 막는다)
+// 보이는 탭도 다 읽기 전까지는 behind — 읽는 사이(저장소가 막혀 있으면 몇 초)에 누른 저장이 옛 내용으로 나가 다른 창이 고친 것을 덮지 않게 (save 가 먼저 다시 읽는다)
+bc?.addEventListener('message', () => { behind = true; if (!document.hidden) reload(); });
 // 같이 쓰는 목록은 앱을 열 때·다시 볼 때·인터넷이 돌아올 때·고칠 때 맞춘다
 // ponytail: 켜 둔 동안은 1분마다 받아 온다. 상대가 고친 것이 바로 보여야 하면 Firebase 의 실시간 받기(EventSource)로
 // 다시 읽지 못했으면 날짜 바뀜 처리(저장)는 건너뛴다 — 고친 것도 없는데 「저장하지 못했어요」가 뜨지 않게. 맞추기는 스스로 다시 읽고 판단한다
@@ -2228,11 +2240,15 @@ async function twins() {
     document.getElementById('twin').hidden = !(open.size > 1 || old || syncHeld());      // 맞추기가 차례를 오래 못 받고 있어도 — 누군가 쥔 채 멈춰 있다
   } catch {}
 }
-const wake = () => (usedToday(), twins(), setTimeout(twins, 3000), reload().then(ok => { if (ok) refresh(); }).then(syncNow));      // 3초 뒤 한 번 더 — 새로고침 직후엔 앞 문서가 쥐던 것이 아직 안 풀려 잘못 세기도 한다
-document.addEventListener('visibilitychange', () => { if (document.hidden) { getting?.abort(); idb.rest(); } else wake(); });
+// 3초 뒤 한 번 더 세는 것은 새로고침 직후엔 앞 문서가 쥐던 것이 아직 안 풀려 잘못 세기도 해서
+// 다시 읽혔으면: 날이 바뀌었으면 다시 짜서 저장하고(refresh), 아니어도 저장을 포기했던 변경(owed)이 화면에 남아 있으면 이때 저장한다
+const wake = () => (usedToday(), twins(), setTimeout(twins, 3000), reload().then(ok => { if (ok && !refresh() && owed && !document.hidden) save(); }).then(syncNow));
+// 숨을 때: 연결을 놓고 behind 를 세운다 — 숨은 사이 다른 창이 저장한 알림을 놓쳤을 수 있다. 다시 보여 다 읽기 전의 저장이 옛 내용으로 덮어쓰지 않게 (save 가 먼저 다시 읽는다)
+const onHide = () => { behind = true; idb.rest(); };
+document.addEventListener('visibilitychange', () => { if (document.hidden) { getting?.abort(); onHide(); } else wake(); });
 addEventListener('pageshow', wake);
-addEventListener('pagehide', () => idb.rest());
-document.addEventListener('freeze', () => idb.rest());      // 폰이 탭을 얼리기 직전
+addEventListener('pagehide', onHide);
+document.addEventListener('freeze', onHide);      // 폰이 탭을 얼리기 직전
 addEventListener('online', () => document.hidden || syncNow());
 setInterval(() => document.hidden || (twins(), syncNow()), 60e3);
 dlg.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.name === 'syncUrl') { e.preventDefault(); used('joinSync'); ACT.joinSync(); } });      // 주소 칸에서 Enter = 연결 (그냥 두면 창의 첫 버튼이 눌린다)
