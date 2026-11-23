@@ -1179,7 +1179,7 @@ async function checkForm(ready, advice) {     // AI 루틴 점검 결과 창 (�
     <small class="asof" hidden></small><p class="ai" role="status">준비 중이에요…</p><div class="check"></div>
     ${help(adv ? 'AI가 받은 답에서 뽑은 것이라 다를 수 있어요 — 누르기 전에 확인해 주세요' : 'AI 의견이라 틀릴 수 있어요 · 보낸 내용 보기',
       `보내는 것: ${adv ? '붙여 넣은 글과 ' : ''}제품 이름·종류·성분·쓰는 때·메모, 이번 주 루틴, 가장 최근 피부 상태 태그, 최근 ${MEMO_DAYS}일 피부 기록 메모 (사진은 안 보내요)`)}
-    <div class="actions"><span class="grow"></span>${adv ? '<button type="button" data-act="pasteAdvice">다시 붙여 넣기</button>' : '<button type="button" data-act="check" data-fresh="1">다시 점검</button>'}<button class="primary">닫기</button></div></form>`);
+    <div class="actions"><span class="grow"></span>${adv ? '<button type="button" data-act="pasteAdvice" data-again="1">다시 붙여 넣기</button>' : '<button type="button" data-act="check" data-fresh="1">다시 점검</button>'}<button class="primary">닫기</button></div></form>`);
   const form = dlg.querySelector('form'), out = form.querySelector('.ai'), again = form.querySelector('.actions [type=button]');
   const live = () => form.isConnected && dlg.open;      // 창을 닫았거나 다시 점검을 눌렀으면 이 결과는 버린다
   again.disabled = true;
@@ -1234,12 +1234,13 @@ async function checkForm(ready, advice) {     // AI 루틴 점검 결과 창 (�
   finally { if (form.isConnected) again.disabled = false; }
 }
 // 다른 AI 답 붙여 넣기 — 「루틴 글로 복사」를 다른 AI 에 보내 받은 답을, 제품별 바로 적용 버튼으로 바꾼다 (결과는 checkForm 창)
-// 붙여 넣은 글은 저장하지 않는다. 오류가 나거나 다시 하고 싶을 때 또 붙여 넣지 않게 앱을 다시 열 때까지만 기억한다 (lastAdvice)
-function adviceForm() {
+// 붙여 넣은 글은 저장하지 않는다. 오류가 나거나 다시 하고 싶을 때 또 붙여 넣지 않게, 결과 창의 「다시 붙여 넣기」(again)로 열 때만 방금 글을 다시 채운다 (lastAdvice)
+// 루틴 화면의 버튼은 빈 칸으로 연다 — 지난 답이 채워져 있으면 새 답이 그 사이에 끼어들어 옛 권고가 섞여 나온다 (11-23 약통 검토에서 찾음)
+function adviceForm(again) {
   modal(`<form method="dialog" data-form="advice">
     <h2>📥 다른 AI 답 붙여 넣기</h2>
     ${help('받은 답을 제품별 버튼으로 바꿔 줘요 · 글은 Gemini 로 보내요', '「이번 주 루틴 글로 복사」한 글을 다른 AI 에 보내고, 받은 답을 여기에 붙여 넣어 주세요. 「메모에 넣기」·「저녁만으로」 같은 버튼으로 바뀌어요. 붙여 넣은 글은 저장하지 않고, 제품 목록·이번 주 루틴·최근 피부 기록 메모와 함께 보내요.')}
-    <label>받은 답 <textarea name="advice" rows="8" required maxlength="8000" placeholder="여기에 붙여 넣어 주세요">${esc(lastAdvice)}</textarea></label>
+    <label>받은 답 <textarea name="advice" rows="8" required maxlength="8000" placeholder="여기에 붙여 넣어 주세요">${esc(again ? lastAdvice : '')}</textarea></label>
     <div class="actions"><span class="grow"></span><button type="button" data-act="close">취소</button><button class="primary">버튼으로 바꾸기</button></div></form>`);
 }
 function finishForm(p) {                      // 다 썼어요 → 이미 개봉한 것으로 채워지면 그대로, 아니면 안 뜯은 제품(이 장소 → 다른 장소) 중 대신 쓸 것을 골라 바로 개봉 (replacements)
@@ -1935,7 +1936,7 @@ const ACT = {
     if (state.place !== pid || dlg.open || document.hidden) return;
     checkForm(kept ? (lastCheck = kept) : undefined);
   },
-  pasteAdvice() { refresh(); adviceForm(); },
+  pasteAdvice(d) { refresh(); adviceForm(d.again); },      // again = 결과 창의 「다시 붙여 넣기」
   applyMemo(d) {                              // AI 점검 제안 → 제품 메모에 덧붙인다 (루틴에 📝로 보인다)
     const p = product(d.id); if (!p || !d.memo) return;
     const memo = p.memo ? `${p.memo} / ${d.memo}` : d.memo;
