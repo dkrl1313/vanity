@@ -209,7 +209,7 @@ const SLOTS = { am: '아침', pm: '저녁' };
 const TAGS = ['좋음', '건조', '유분', '트러블', '홍조', '예민'];
 // 레티놀·각질케어는 저녁에만, 서로 다른 날에. 목·일은 쉬는 날이라 팩을 둔다
 const NIGHTS = { retinol: [0, 2, 4], acid: [1, 5], pack: [3, 6] };
-// 자동 루틴을 조금씩 바꾸는 규칙: 계절(날짜로 자동)·피부 타입(⋯ 메뉴). 예민한 주가 우선(레티놀·각질을 다 쉼), 직접 고친 루틴은 그대로
+// 자동 루틴을 조금씩 바꾸는 규칙: 계절(날짜로 자동)·피부 타입(⋯ 메뉴)·건조 기록(DRY). 예민한 주가 우선(레티놀·각질을 다 쉼), 직접 고친 루틴은 그대로
 // nights = 그 성분을 쓰는 저녁을 줄인다(여러 규칙이면 겹치는 날만 = 덜 쓰는 쪽), amLight = 아침엔 로션까지만(크림·페이스오일은 저녁)
 const SEASONS = {
   change: { name: '환절기', nights: { retinol: [0, 4] }, note: '환절기: 레티놀은 주 2회(월·금)' },      // 피부가 쉽게 예민해지는 때
@@ -224,6 +224,10 @@ const SKINS = {
   dehyd: { name: '수부지', nights: {}, amLight: true, note: '수부지: 아침은 로션까지, 크림·페이스오일은 저녁에' },
 };
 const SENSITIVE = { name: '민감성', nights: { retinol: [0, 4] }, note: '민감성: 레티놀은 주 2회(월·금)' };
+// 건조한 주: 최근 7일 안의 피부 기록에 '건조'가 있으면 「아침엔 로션까지만」(amLight)을 쉰다 — 여름·지성·수부지여도 아침에 크림·페이스오일 (amFull)
+// 예민한 주(가장 최근 기록 하나만 봄)와 달리 7일 안의 기록을 모두 본다 — AI 사진 기록은 번들거림(유분)을 주로 적고 건조는 드물게 붙여서, 가장 최근 것만 보면 날마다 켜졌다 꺼졌다 한다 (11-25)
+const DRY = { name: '건조', nights: {}, amFull: true, note: '건조 기록: 아침에도 크림·페이스오일' };
+const isDry = (logs, now) => !!logs?.some(l => l.date <= now && daysBetween(l.date, now) <= 7 && l.tags.includes('건조'));
 // 쉬는 저녁(제품별로 고름): 그 성분을 쓰는 저녁엔 이 제품을 뺀다 — 예: 각질 마스크 위에 꾸덕한 밤을 덮지 않게. [이름, 해당 묶음]
 const REST = { acid: ['각질 성분 쓰는 저녁', ['acid']], retinol: ['레티놀 쓰는 저녁', ['retinol']], active: ['레티놀·각질 쓰는 저녁', ['retinol', 'acid']] };
 const SOON = 30;                              // 기한이 이 날수 안이면 '임박'
@@ -275,7 +279,23 @@ const vitcAm = p => !p.when && p.actives.includes('vitc') && p.cat !== 'cleanser
 const seasonOf = now => { const m = +now.slice(5, 7); return m >= 6 && m <= 8 ? 'summer' : m >= 3 && m <= 11 ? 'change' : 'winter'; };
 const nightsOf = rules => Object.fromEntries(Object.entries(NIGHTS).map(([g, ds]) => [g, ds.filter(d => rules.every(r => !r.nights[g] || r.nights[g].includes(d)))]));
 const skinName = s => [SKINS[s.skin?.type]?.name, s.skin?.sensitive && SENSITIVE.name].filter(Boolean).join(' · ');      // 「지성 · 민감성」 ('' = 고르지 않음)
-const rulesOf = (s, now) => [SKINS[s.skin?.type], s.skin?.sensitive && SENSITIVE, SEASONS[seasonOf(now)]].filter(Boolean);      // 지금 걸리는 규칙 (안내 순서: 고른 것 먼저)
+const baseRules = (s, now) => [SKINS[s.skin?.type], s.skin?.sensitive && SENSITIVE, SEASONS[seasonOf(now)]].filter(Boolean);      // 피부 타입·계절만 (안내 순서: 고른 것 먼저) — 피부 기록은 안 본다: 다음 주부터를 미리 짜 볼 때 쓴다 (nextTurns)
+const rulesOf = (s, now) => [...baseRules(s, now), ...(isDry(s.logs, now) ? [DRY] : [])];      // 지금 걸리는 규칙. 건조는 맨 뒤 — 앞의 「로션까지만」을 되돌리는 규칙이라 (ruleNotes)
+// 규칙을 하나씩 더해, 그 규칙 때문에 이번 주 루틴이 실제로 더 달라질 때만 그 안내(note)를 모은다
+// (해당 제품이 없거나 예민한 주라 이미 쉬면 말하지 않고, 고른 피부 타입과 같은 효과인 계절 안내는 겹쳐 말하지 않음)
+// 건조 기록이 「아침엔 로션까지만」을 되돌렸으면 그 안내(여름·지성·수부지)는 뺀다 — 서로 반대 말이 나란히 나오지 않게
+function ruleNotes(products, calm, now, rules) {
+  let used = [], prev = JSON.stringify(generate(products, calm, now));
+  const hit = [];
+  for (const r of rules) {
+    used = [...used, r];
+    const cur = JSON.stringify(generate(products, calm, now, used));
+    if (r.note && cur !== prev) hit.push(r);
+    prev = cur;
+  }
+  const dry = hit.includes(DRY);
+  return hit.filter(r => !(dry && r.amLight)).map(r => r.note);
+}
 function fits(p, d, t, calm, nights) {        // 이 제품을 d요일 t(am/pm)에 써도 되는가
   const when = CATS[p.cat][1], g = group(p);
   if (!when) return false;
@@ -286,9 +306,9 @@ function fits(p, d, t, calm, nights) {        // 이 제품을 d요일 t(am/pm)�
   return when === 'both' || when === t;
 }
 // 개봉했고 기한 안 지난 제품으로 일주일 루틴을 짠다 (개봉 = 루틴 대상) → [{am: [id…], pm: [id…]} × 7]
-// calm = 피부가 예민한 주: 레티놀·각질케어와 「예민한 주엔 쉼」으로 둔 제품(harsh)을 뺀다. rules = 계절·피부 타입 규칙 (rulesOf, 없으면 기본 규칙만)
+// calm = 피부가 예민한 주: 레티놀·각질케어와 「예민한 주엔 쉼」으로 둔 제품(harsh)을 뺀다. rules = 계절·피부 타입·건조 기록 규칙 (rulesOf, 없으면 기본 규칙만)
 function generate(products, calm, now, rules = []) {
-  const nights = nightsOf(rules), amLight = rules.some(r => r.amLight);
+  const nights = nightsOf(rules), amLight = rules.some(r => r.amLight) && !rules.some(r => r.amFull);      // 건조한 주(DRY)엔 아침에도 크림까지
   const usable = products.filter(p => p.opened && !expired(p, now) && p.when !== 'off' && !(calm && p.harsh))
     .sort((a, b) => (expiryOf(a) || '9').localeCompare(expiryOf(b) || '9'));      // 기한 임박한 것부터
   // 같은 자리 제품은 차례로 돌려 쓰고, 그 차례의 시작을 주마다 한 칸씩 민다 — 자리보다 제품이 많을 때 늘 같은 것만 밀리지 않게 (11-17 아누아 마스크가 매주 빠짐)
@@ -402,13 +422,13 @@ function offSoon(s, now) {
   return s.products.filter(p => p.opened && p.when === 'off' && CATS[p.cat][1] && !expired(p, now) && nearEnd(p, now) && !inWeek.has(p.id)).sort((a, b) => left(a, now) - left(b, now));
 }
 // 이번 주 루틴에 자리가 없는 제품이 몇 주 뒤에 다시 들어오는지 → Map(id → 주 수, max 주 안에 없으면 0). 다음 주부터 차례로 짜 보고 다 찾으면 멈춘다
-// 지금 제품·설정 그대로라고 보고 짠다 — 기한·계절은 그 주 기준, 예민한 주는 아닌 것으로 (그때의 피부 기록은 알 수 없다)
+// 지금 제품·설정 그대로라고 보고 짠다 — 기한·계절은 그 주 기준, 예민한 주·건조한 주는 아닌 것으로 (그때의 피부 기록은 알 수 없다 — baseRules)
 const TURN_WEEKS = 8;
 function nextTurns(s, ids, now, max = TURN_WEEKS) {
   const left = new Set(ids), turns = new Map(ids.map(id => [id, 0]));
   // 그 주의 월요일과 일요일 기준으로 한 번씩 짠다 — 주중에 기한이 지나는 제품이 있으면 그날부터 루틴이 바뀌어서(임박 제품이 끝나 쉬던 제품이 들어옴), 한 날만 보면 한 주 늦게 나온다
   for (let k = 1; k <= max && left.size; k++) for (const day of [addDays(monday(now), 7 * k), addDays(monday(now), 7 * k + 6)])
-    for (const d of generate(s.products, false, day, rulesOf(s, day))) for (const t in SLOTS) for (const id of d[t]) if (left.delete(id)) turns.set(id, k);
+    for (const d of generate(s.products, false, day, baseRules(s, day))) for (const t in SLOTS) for (const id of d[t]) if (left.delete(id)) turns.set(id, k);
   return turns;
 }
 const turnName = k => (k === 1 ? '다음 주' : k ? `${k}주 뒤` : `${TURN_WEEKS}주 안엔 차례가 없어요`);
@@ -471,7 +491,8 @@ function restNote(s, p, now) {
   return `이번 주 쉬는 저녁: ${when} · 그 자리엔 ${subs.every(([, n]) => n === subs[0][1]) ? subs[0][1] : subs.map(([d, n]) => `${d} ${n}`).join(', ')}`;
 }
 // 예민한 주: 가장 최근 피부 기록이 7일 안이고 예민·홍조면 그 상태 이름을, 아니면 '' (앞날짜로 잘못 적은 기록은 무시). 둘 다면 예민
-// 홍조도 넣은 까닭(11-18): 해야 할 일이 예민과 같다(자극 줄이기). 트러블은 각질 성분이 도움이 되기도 해서, 유분·건조는 피부 타입 규칙과 겹치거나 바뀌는 것이 작아서 넣지 않았다
+// 홍조도 넣은 까닭(11-18): 해야 할 일이 예민과 같다(자극 줄이기). 트러블은 각질 성분이 도움이 되기도 해서, 유분은 피부 타입 규칙과 겹쳐서 넣지 않았다
+// 건조는 예민한 주가 아니라 따로 본다(11-25) — 자극을 줄일 일이 아니라 아침 크림을 되돌릴 일이라 (DRY·isDry)
 const CALM_TAGS = ['예민', '홍조'];
 // 「가장 최근 피부 상태」 = 상태를 고른 기록 중 가장 최근 것(같은 날 여럿이면 나중 것). 메모·사진만 있는 기록은 상태를 말하지 않으니 건너뛴다
 // — 안 그러면 「오늘 피부 ✏️」로 메모만 적어도 그 빈 기록이 가장 최근이 되어 예민한 주가 조용히 풀린다 (11-18 검토)
@@ -940,18 +961,11 @@ function viewRoutine() {
   const notes = [], why = [];      // why = 이번 주 루틴이 이렇게 짜인 까닭(예민한 주·피부 타입·계절) — 한 줄로 모은다
   const tag = R.manual ? '' : calmTag(state.logs, now);
   if (tag) why.push(`예민한 주${tag === '예민' ? '' : `(${tag} 기록)`}: 레티놀·각질케어는 쉬어요`);
-  // 피부 타입 → 계절 순으로 규칙을 하나씩 더해, 그 규칙 때문에 이번 주 루틴이 실제로 더 달라질 때만 알린다
-  // (해당 제품이 없거나 예민한 주라 이미 쉬면 말하지 않고, 고른 피부 타입과 같은 효과인 계절 안내는 겹쳐 말하지 않음)
-  if (!R.manual) {
-    let used = [], prev = JSON.stringify(generate(state.products, calmNow, now));
-    for (const r of rulesOf(state, now)) {
-      used = [...used, r];
-      const cur = JSON.stringify(generate(state.products, calmNow, now, used));
-      if (r.note && cur !== prev) why.push(r.note);
-      prev = cur;
-    }
-  }
-  if (why.length) notes.push(note(why.join(' · '), '', tag ? '<button id="calmDone" data-act="calmDone">가라앉았어요 · 평소 루틴으로</button>' : ''));
+  // 피부 타입 → 계절 → 건조 기록 순으로, 그 규칙 때문에 이번 주 루틴이 실제로 달라질 때만 알린다 (ruleNotes)
+  const ruleWhy = R.manual ? [] : ruleNotes(state.products, calmNow, now, rulesOf(state, now));
+  why.push(...ruleWhy);
+  if (why.length) notes.push(note(why.join(' · '), ruleWhy.includes(DRY.note) ? '최근 7일 안의 피부 기록에 「건조」가 있어서 아침에도 크림·페이스오일을 넣었어요. 마지막 건조 기록에서 7일이 지나면 아침은 다시 로션까지만이에요. 먼저 끄려면 피부 기록 탭에서 그 기록의 건조를 빼 주세요 — 오늘 피부에서 건조를 꺼도 지난 기록은 남아요.' : '',
+    tag ? '<button id="calmDone" data-act="calmDone">가라앉았어요 · 평소 루틴으로</button>' : ''));
   const soft = harshOut(state, now).map(p => esc(p.name)).join(', ');
   if (soft) notes.push(note(`예민한 주라 쉬는 제품: ${soft}`, '「예민한 주엔 쉼」으로 둔 제품이에요. 가장 최근에 고른 피부 상태가 예민·홍조가 아니게 되거나 7일이 지나면 돌아와요.'));
   const gone = state.products.filter(p => p.opened && expired(p, now)).length;
@@ -1006,7 +1020,7 @@ function viewRoutine() {
     return `<section class="card"><h2>${t === 'am' ? '☀️' : '🌙'} ${SLOTS[t]}${canTick && real.length ? ` <small>${n === real.length ? '다 발랐어요' : `${n}/${real.length} 발랐어요`}</small>` : ''}</h2>${rows ? `<ol class="steps">${rows}</ol>` : '<p class="muted">비어 있어요</p>'}${add}</section>`;
   };
 
-  // 오늘 피부 상태를 한 번 눌러 기록 (오늘 화면에서만) — 예민·홍조면 그 주 루틴이 바로 바뀐다. 피부 기록 탭에 오늘 기록으로 남는다
+  // 오늘 피부 상태를 한 번 눌러 기록 (오늘 화면에서만) — 예민·홍조(예민한 주)·건조(건조한 주)면 루틴이 바로 바뀐다. 피부 기록 탭에 오늘 기록으로 남는다
   // 줄 머리 「오늘 피부 ✏️」를 누르면 그 오늘 기록 창이 열려 메모를 바로 적는다(없으면 새 기록) — 하루 중 느낀 점을 덧붙이기 쉽게, 메모는 AI 점검에 같이 간다. 메모가 있으면 📝
   // 버튼을 따로 달지 않고 글자를 버튼으로: 좁은 폰(360px)에선 칩 여섯 개로 줄이 이미 찬다
   const todayLog = state.logs[lastAt(state.logs, now)], mine = todayLog?.tags ?? [];
@@ -1571,6 +1585,7 @@ const APP_RULES = `앱이 이미 자동으로 하는 일 (다시 권하지 않�
 - 슬리핑팩을 쓰는 저녁엔 크림을 빼고 로션까지 바른 뒤 슬리핑팩으로 마무리
 - 같은 종류가 여러 개면 날마다 번갈아 쓰고, 자리보다 제품이 많으면 주마다 차례를 밀어 돌아가며 씀(이번 주에 빠진 제품은 다음 주에 들어감). 단 기한이 30일 안 남은 제품이 있으면 그 자리(레티놀·각질 성분은 종류가 달라도 한 자리)는 그것을 매일 먼저 쓰고 나머지는 쉼
 - 최근 피부 기록이 '예민'이나 '홍조'면 그 주는 레티놀·각질과 사용자가 「예민한 주엔 쉼」으로 둔 제품을 쉬고 클렌저도 매일 순한 것으로
+- 최근 7일 안의 피부 기록에 '건조'가 있으면 여름·지성·수부지여도 아침에 크림·페이스오일을 넣어요(「아침엔 로션까지만」을 쉼)
 - 사용자가 '함께 바르기'로 묶은 제품은 같은 자리에 이어서 넣어요. 같은 종류가 연달아 나와도 사용자가 의도한 것이니 지적하지 않아요.
 - 사용자가 '쉬는 저녁'을 고른 제품은 레티놀·각질 성분을 쓰는 저녁에 빼고, 같은 종류 다른 제품이 있으면 그것을 넣어요.
 - 레티놀·각질 성분 제품과 팩은 '쓰는 때' 설정과 상관없이 이미 정해진 저녁에만 들어가요. 이 제품들의 쓰는 때를 바꾸라고 하지 않아요.
@@ -1647,6 +1662,9 @@ function routineText(s, now) {
     ...s.routine.days.flatMap((d, i) => [`${DAYS[i]} 아침: ${d.am.map(name).join(' → ') || '없음'}`, `${DAYS[i]} 저녁: ${d.pm.map(name).join(' → ') || '없음'}`]),
     `[지금 계절] ${SEASONS[seasonOf(now)].name}`,
     `[피부 타입] ${skinName(s) || '고르지 않음'}`,
+    // 건조한 주는 가장 최근 상태만으로는 알 수 없어서(7일 안의 기록을 본다) 따로 적는다 — 안 그러면 AI 가 수부지인데 아침에 크림이 있다고 지적한다
+    // 화면 안내와 같은 조건(ruleNotes): 건조 기록이 루틴을 실제로 바꿨을 때만. 직접 고친 루틴엔 규칙이 안 걸리니 적지 않는다
+    ...(!s.routine.manual && ruleNotes(s.products, isCalm(s.logs, now), now, rulesOf(s, now)).includes(DRY.note) ? ["[건조한 주] 최근 7일 안의 피부 기록에 '건조'가 있어 아침에도 크림·페이스오일을 넣는 중"] : []),
     `[가장 최근 피부 상태] ${last ? `${last.date}: ${last.tags.join(', ')}` : '기록 없음'}`,
     ...(memos.length ? [`[최근 ${MEMO_DAYS}일 피부 기록 메모 — 최신순]`, ...memos] : [])].join('\n');
 }
@@ -2320,6 +2338,20 @@ function selfTest() {
     generate(su, false, '2026-11-16', [SKINS.oily])[0].am, cleanState({ skin: { type: 'bad', sensitive: 1 } }).skin, skinName(sk)],
     [{ retinol: [0, 4], acid: [5], pack: [3, 6] }, ['지성', '민감성', '여름'], ['겨울'], ['lo', 'fo'], { type: '', sensitive: true }, '지성 · 민감성'],
     '피부 타입: 계절과 함께 덜 쓰는 쪽으로, 지성은 아침 로션까지만, 모르는 값은 버림');
+  const dl = (...ds) => ds.map(([date, ...tags]) => ({ date, tags }));
+  eq([isDry(dl(['2026-11-10', '건조']), '2026-11-16'), isDry(dl(['2026-11-09', '건조']), '2026-11-16'), isDry(dl(['2026-11-08', '건조']), '2026-11-16'), isDry(dl(['2026-11-10', '건조', '유분'], ['2026-11-15', '좋음']), '2026-11-16'),
+    isDry(dl(['2026-11-17', '건조']), '2026-11-16'), isDry(dl(['2026-11-15', '유분', '예민']), '2026-11-16'), isDry([], '2026-11-16'), isDry(undefined, '2026-11-16')],
+    [true, true, false, true, false, false, false, false], '건조한 주: 최근 7일 안의 기록에 건조가 하나라도 있으면(가장 최근 것이 아니어도) · 8일 전·앞날 기록·다른 상태는 아님');
+  const dryS = { skin: { type: 'dehyd' }, logs: dl(['2026-11-14', '건조']) };
+  eq([rulesOf(dryS, '2026-11-16').map(r => r.name), baseRules(dryS, '2026-11-16').map(r => r.name), rulesOf({ ...dryS, logs: [] }, '2026-11-16').map(r => r.name),
+    generate(su, false, '2026-11-16', [SKINS.dehyd])[0], generate(su, false, '2026-11-16', [SKINS.dehyd, DRY])[0], generate(su, false, '2026-07-13', [SEASONS.summer, SKINS.oily, DRY])[0].am, generate(su, false, '2026-11-16', [DRY])[0].am],
+    [['수부지', '환절기', '건조'], ['수부지', '환절기'], ['수부지', '환절기'], { am: ['lo', 'fo'], pm: ['lo', 'cr'] }, { am: ['lo', 'cr', 'fo'], pm: ['lo', 'cr'] }, ['lo', 'cr', 'fo'], ['lo', 'cr', 'fo']],
+    '건조한 주엔 수부지·지성·여름이어도 아침에 크림·페이스오일 — 규칙 맨 뒤에 붙고, 다음 주 미리 보기(baseRules)엔 안 넣음');
+  eq([ruleNotes(su, false, '2026-11-16', [SKINS.dehyd, SEASONS.change]), ruleNotes(su, false, '2026-11-16', [SKINS.dehyd, SEASONS.change, DRY]), ruleNotes(su, false, '2026-07-13', [SKINS.oily, SEASONS.summer, DRY]),
+    ruleNotes([P({ id: 'lo', cat: 'lotion' })], false, '2026-11-16', [SKINS.dehyd, DRY]), ruleNotes(su, false, '2026-11-16', [SEASONS.change, DRY]), ruleNotes(ps, false, '2026-11-16', [SEASONS.change, DRY])],
+    [[SKINS.dehyd.note], [DRY.note], [DRY.note], [], [], [SEASONS.change.note]],
+    '루틴 안내: 건조 기록이 아침 크림을 되돌렸으면 그 말만(「로션까지만」 안내는 뺌) · 되돌릴 것이 없으면 건조는 말하지 않음 · 다른 규칙 안내는 그대로');
+  ok(APP_RULES.includes("기록에 '건조'가 있으면"), 'AI 에 보내는 앱 규칙: 건조한 주엔 아침에도 크림을 넣는다고 알림(다시 권하지 않게)');
   const rot = ['a', 'b', 'c'].map(id => P({ id, cat: 'toner', actives: ['acid'] }));
   eq(['2026-11-09', '2026-11-16', '2026-11-22', '2026-11-23', '2026-11-30'].map(d => generate(rot, false, d).flatMap(x => x.pm).join('')),
     ['ca', 'ab', 'ab', 'bc', 'ca'], '자리보다 많은 제품은 주마다 한 칸씩 밀려 돌아가며 (같은 주 안에선 그대로)');
@@ -2417,7 +2449,7 @@ function selfTest() {
   const tagOn = (...tags) => calmTag([{ date: '2026-11-14', tags }], '2026-11-16');
   eq([tagOn('홍조'), tagOn('홍조', '예민', '트러블'), tagOn('유분', '트러블', '홍조'), tagOn('트러블'), tagOn('유분'), tagOn('건조'), tagOn('좋음'), isCalm([{ date: '2026-11-14', tags: ['홍조'] }], '2026-11-16'),
     isCalm([{ date: '2026-11-14', tags: ['홍조'] }, { date: '2026-11-15', tags: ['트러블'] }], '2026-11-16')],
-    ['홍조', '예민', '홍조', '', '', '', '', true, false], '홍조도 예민한 주로 본다 (둘 다면 예민) · 트러블·유분·건조·좋음은 루틴을 바꾸지 않는다');
+    ['홍조', '예민', '홍조', '', '', '', '', true, false], '홍조도 예민한 주로 본다 (둘 다면 예민) · 트러블·유분·건조·좋음은 예민한 주가 아니다(건조는 따로 — 건조한 주)');
   // 메모·사진만 있는 기록(상태를 안 고름)은 가장 최근 상태로 치지 않는다 — 「오늘 피부 ✏️」로 메모만 적어도 예민한 주가 풀리지 않게. 「가라앉았어요」(좋음)나 다른 상태를 고르면 풀린다
   const memoOnly = [{ date: '2026-11-14', tags: ['예민'] }, { date: '2026-11-16', tags: [], memo: '볼이 당김' }];
   eq([calmTag(memoOnly, '2026-11-16'), calmTag(calmOver(memoOnly.map(cleanLog), '2026-11-16'), '2026-11-16'), calmTag([...memoOnly, { date: '2026-11-16', tags: ['건조'] }], '2026-11-16'),
@@ -2596,6 +2628,11 @@ function selfTest() {
     logs: [{ date: '2026-11-10', tags: ['건조'] }, { date: '2026-11-15', tags: ['예민', '홍조'] }, { date: '2027-01-01', tags: ['좋음'] }], routine: { manual: false, days: DAYS.map((_, i) => ({ am: [], pm: i === 1 ? ['a'] : [] })) } }, '2026-11-16').split('\n');
   ok(rt.includes('- [1] 토너A | 토너·스킨 | 성분: AHA·BHA·효소 | 쓰는 때: 각질 날 저녁(화·토) 고정 | 메모: 부드럽게 닦기') && rt.includes('- [2] 크림B | 크림') && rt.includes('화 저녁: 토너A') && rt.includes('월 아침: 없음')
     && rt.at(-1) === '[가장 최근 피부 상태] 2026-11-15: 예민, 홍조', 'AI 루틴 점검에 보내는 글 (앞날짜 기록은 무시)');
+  const dryText = (logs, manual, type = 'dehyd') => routineText({ products: [P({ id: 'lo', cat: 'lotion' }), P({ id: 'cr', cat: 'cream' })], skin: { type }, logs, routine: { manual, days: DAYS.map(() => ({ am: [], pm: [] })) } }, '2026-11-16').split('\n');
+  const d10 = [{ date: '2026-11-10', tags: ['건조'] }], dryLine = (...a) => dryText(...a).some(l => l.startsWith('[건조한 주]'));
+  eq([dryText(d10, false).at(-2).slice(0, 7), dryLine(d10, false), dryLine(d10, true), dryLine(d10, false, 'combo'), dryLine([{ date: '2026-11-08', tags: ['건조'] }], false), dryLine([], false), rt.some(l => l.startsWith('[건조한 주]'))],
+    ['[건조한 주]', true, false, false, false, false, false],
+    'AI 점검 글: 건조 기록이 아침 크림을 되돌렸을 때만 그 줄을 적음(가장 최근 상태 줄 바로 앞) · 직접 고친 루틴·되돌릴 것이 없는 피부 타입·8일 전 기록·기록 없음이면 안 적음');
   // 피부 기록 메모: 메모 있는 기록만, 최근 14일·최신순(같은 날은 나중 것 먼저), 10건까지, 줄바꿈은 한 줄로
   const ML = (date, memo, tags = []) => cleanLog({ date, memo, tags });
   const mlogs = [ML('2026-11-02', '너무 옛날'), ML('2026-11-03', '14일째'), ML('2026-11-10', '', ['건조']), ML('2026-11-15', '볼이 당김\n  저녁에 화끈', ['건조', '홍조']), ML('2026-11-16', '아침'), ML('2026-11-16', '저녁\nAI: 턱에 붉은 기'), ML('2026-11-17', '내일')];
